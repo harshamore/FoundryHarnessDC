@@ -1,0 +1,4 @@
+# Streamlit Cloud reads this file to build the app environment.
+# Installs foundry_harness itself (editable) plus its "app" extra
+# (streamlit, openai) as declared in pyproject.toml.
+-e .[app]
