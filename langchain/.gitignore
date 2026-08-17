@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# local secrets
+.env
+
+# generated at runtime, not vendored content
+data/foundry.sqlite3
+data/foundry.sqlite3-*
+
+# vendored CodeGuard rule corpus: fetched by scripts/fetch_codeguard_rules.py,
+# not hand-authored -- regenerate rather than diff
+data/codeguard/rules/
