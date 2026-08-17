@@ -96,22 +96,36 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-_connection_locks: dict[int, threading.Lock] = {}
+_connection_locks: dict[int, threading.RLock] = {}
 _locks_guard = threading.Lock()
 
 
-def write_lock_for(conn: sqlite3.Connection) -> threading.Lock:
-    """One lock per connection, shared by every store operating on it.
+def lock_for(conn: sqlite3.Connection) -> threading.RLock:
+    """One reentrant lock per connection, shared by every store operating
+    on it, guarding EVERY access -- reads included, not just transactional
+    writes.
 
     DeepAgents (and LangGraph's tool-calling machinery generally) can
     dispatch multiple tool calls from a single LLM turn concurrently, on
     real OS threads -- and every store built on a given `conn` shares that
-    same connection object. SQLite tracks one transaction at a time per
-    connection: two threads issuing `BEGIN IMMEDIATE` back to back on the
-    same connection raises "cannot start a transaction within a
-    transaction". Every store's write path takes this lock around its
-    whole BEGIN..COMMIT/ROLLBACK block, so concurrent tool calls serialize
-    instead of colliding.
+    same connection object. Two failure modes were observed live, both
+    fixed by the same lock:
+
+      1. Two threads issuing `BEGIN IMMEDIATE` back to back on the same
+         connection: "cannot start a transaction within a transaction".
+      2. Two threads issuing plain, non-transactional `execute()` /
+         `fetchall()` calls on the same connection *concurrently*, with no
+         BEGIN involved at all: Python's sqlite3.Connection is not safe for
+         truly simultaneous access from multiple threads even for reads --
+         reproduced as `InterfaceError: bad parameter or other API misuse`
+         and a nonsensical `IndexError` from `sqlite3.Row.__getitem__`.
+
+    Every store method that touches `self._conn` -- reads and writes alike
+    -- takes this lock around its entire body, not just around explicit
+    transactions. It's an RLock (reentrant) because store methods
+    legitimately call other locked methods on the same store (e.g.
+    `SecurityMapStore.digest()` calls `get_section()` per section); a plain
+    `Lock` would deadlock the thread that already holds it.
 
     Keyed by `id(conn)` rather than a weak reference -- `sqlite3.Connection`
     doesn't support weak references. The connections this harness creates
@@ -125,6 +139,6 @@ def write_lock_for(conn: sqlite3.Connection) -> threading.Lock:
         key = id(conn)
         lock = _connection_locks.get(key)
         if lock is None:
-            lock = threading.Lock()
+            lock = threading.RLock()
             _connection_locks[key] = lock
         return lock

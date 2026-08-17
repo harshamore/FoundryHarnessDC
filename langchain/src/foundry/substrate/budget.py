@@ -7,11 +7,19 @@ cap can stop things before coverage is complete). Both coverage-complete AND
 yield-below-threshold must hold. This phase's version is simplified (no
 trailing window, no runtime cap yet) but the conjunction itself — the part
 Constitution VI actually constrains — is exact.
+
+Every method here takes `foundry.substrate.db.lock_for(self._conn)` around
+its whole body -- consistent with the other stores sharing this connection,
+even though nothing concurrent exercises this one yet (lands with
+Coverage-Guide). The lock is reentrant, so `should_stop()`'s calls to
+`total_spend()`/`trailing_yield()` nest without deadlock.
 """
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+
+from foundry.substrate.db import lock_for
 
 
 @dataclass(frozen=True)
@@ -26,38 +34,45 @@ class BudgetGovernor:
         self._caps = caps
 
     def record_spend(self, amount_usd: float, note: str = "") -> None:
-        self._conn.execute(
-            "INSERT INTO budget_events (kind, amount, note) VALUES ('spend', ?, ?)",
-            (amount_usd, note),
-        )
+        with lock_for(self._conn):
+            self._conn.execute(
+                "INSERT INTO budget_events (kind, amount, note) VALUES ('spend', ?, ?)",
+                (amount_usd, note),
+            )
 
     def total_spend(self) -> float:
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_events WHERE kind = 'spend'"
-        ).fetchone()
-        return float(row["total"])
+        with lock_for(self._conn):
+            row = self._conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS total FROM budget_events WHERE kind = 'spend'"
+            ).fetchone()
+            return float(row["total"])
 
     def trailing_yield(self) -> float:
         """Confirmed true-positives per dollar spent so far (unwindowed for now)."""
-        spend = self.total_spend()
-        if spend <= 0:
-            return float("inf")  # no spend yet: never trips the low-yield stop
-        confirmed = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM findings WHERE verdict = 'true-positive'"
-        ).fetchone()["n"]
-        return confirmed / spend
+        with lock_for(self._conn):
+            spend = self.total_spend()
+            if spend <= 0:
+                return float("inf")  # no spend yet: never trips the low-yield stop
+            confirmed = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM findings WHERE verdict = 'true-positive'"
+            ).fetchone()["n"]
+            return confirmed / spend
 
     def should_stop(self, coverage_complete: bool) -> tuple[bool, str]:
         """Constitution VI: coverage AND yield — never yield alone."""
-        spend = self.total_spend()
-        if self._caps.max_spend_usd is not None and spend >= self._caps.max_spend_usd:
-            return True, f"hard spend cap reached (${spend:.2f} >= ${self._caps.max_spend_usd:.2f})"
+        with lock_for(self._conn):
+            spend = self.total_spend()
+            if self._caps.max_spend_usd is not None and spend >= self._caps.max_spend_usd:
+                return True, f"hard spend cap reached (${spend:.2f} >= ${self._caps.max_spend_usd:.2f})"
 
-        if not coverage_complete:
-            return False, "coverage not yet complete"
+            if not coverage_complete:
+                return False, "coverage not yet complete"
 
-        y = self.trailing_yield()
-        if y < self._caps.yield_threshold:
-            return True, f"coverage complete and yield ({y:.4f}) below threshold ({self._caps.yield_threshold})"
+            y = self.trailing_yield()
+            if y < self._caps.yield_threshold:
+                return (
+                    True,
+                    f"coverage complete and yield ({y:.4f}) below threshold ({self._caps.yield_threshold})",
+                )
 
-        return False, "coverage complete but yield still above threshold"
+            return False, "coverage complete but yield still above threshold"

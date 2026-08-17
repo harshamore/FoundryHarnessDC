@@ -5,6 +5,7 @@ the SubAgent/tool wrapping is checked structurally, not by invoking a model.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,37 @@ def test_find_symbol_reports_location(store):
 def test_full_text_search_finds_substring(store):
     matches = store.full_text_search("SELECT id, username, email")
     assert "get_user_by_name" in matches
+
+
+# ---------------------------------------------------------------------------
+# Concurrent reads on one shared connection -- Python's sqlite3.Connection
+# is not safe for truly simultaneous access from multiple threads even for
+# plain SELECTs (reproduced live as InterfaceError / a nonsensical
+# IndexError from sqlite3.Row.__getitem__ when DeepAgents dispatched
+# several read-only tool calls concurrently from one LLM turn)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_reads_on_shared_connection_do_not_corrupt(store):
+    errors: list[tuple[int, str]] = []
+    lock = threading.Lock()
+
+    def read_stuff(i: int) -> None:
+        try:
+            for _ in range(50):
+                store.full_text_search("def")
+                store.get_function_body("get_user_by_name")
+                store.get_callers("get_user_by_name")
+                store.find_symbol("read_uploaded_file")
+        except Exception as e:  # noqa: BLE001 -- capturing for the assertion below
+            with lock:
+                errors.append((i, f"{type(e).__name__}: {e}"))
+
+    threads = [threading.Thread(target=read_stuff, args=(i,)) for i in range(10)]
+    [t.start() for t in threads]
+    [t.join(timeout=30) for t in threads]
+
+    assert errors == []
 
 
 # ---------------------------------------------------------------------------

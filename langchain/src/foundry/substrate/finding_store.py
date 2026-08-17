@@ -15,6 +15,14 @@ made structural rather than aspirational.
 implementation: this phase's tests exercise it with a fake in-memory symbol
 table; the real Indexer (built in notebook 02) supplies the real one without
 any change to this module.
+
+Every method here takes `foundry.substrate.db.lock_for(self._conn)` around
+its whole body -- not just the transactional write in `queue_candidate()`.
+Python's sqlite3.Connection isn't safe for truly concurrent access from
+multiple threads even for plain reads, and DeepAgents can dispatch several
+tool calls from one LLM turn on real threads against this same connection.
+The lock is reentrant, so a `resolver` callback that itself touches this
+same connection (e.g. `IndexStore.symbol_exists`) nests without deadlock.
 """
 from __future__ import annotations
 
@@ -23,7 +31,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable, Literal
 
-from foundry.substrate.db import write_lock_for
+from foundry.substrate.db import lock_for
 
 Verdict = Literal[
     "true-positive", "false-positive", "needs-review", "not-applicable", "code-quality"
@@ -69,19 +77,14 @@ class FindingStore:
     ) -> tuple[int, str, bool]:
         """Insert a candidate finding, deduplicating by fingerprint (FR-045).
 
-        Returns (finding_id, fingerprint, was_new).
-
-        The dedup check and the insert both happen under this connection's
-        write lock (see `foundry.substrate.db.write_lock_for`) -- concurrent
-        tool calls sharing one connection (DeepAgents can dispatch several
-        from a single LLM turn) would otherwise race between the SELECT and
-        the INSERT, and a bare `BEGIN IMMEDIATE` from two threads on the
-        same connection raises "cannot start a transaction within a
-        transaction" regardless.
+        Returns (finding_id, fingerprint, was_new). The dedup check and the
+        insert both happen under this connection's lock -- concurrent tool
+        calls sharing one connection would otherwise race between the
+        SELECT and the INSERT.
         """
         fp = fingerprint(normalized_path, symbol, vulnerability_class)
 
-        with write_lock_for(self._conn):
+        with lock_for(self._conn):
             existing = self._conn.execute(
                 "SELECT id FROM findings WHERE fingerprint = ?", (fp,)
             ).fetchone()
@@ -121,37 +124,40 @@ class FindingStore:
         if verdict not in _VERDICTS:
             raise ValueError(f"unknown verdict: {verdict!r}")
 
-        final_verdict: Verdict = verdict
-        report = investigation_report
+        with lock_for(self._conn):
+            final_verdict: Verdict = verdict
+            report = investigation_report
 
-        if verdict == "true-positive":
-            unresolved = [c for c in citations if not resolver(c)]
-            if not citations or unresolved:
-                final_verdict = "needs-review"
-                bad = [f"{c.path}:{c.symbol}" for c in unresolved]
-                report = (
-                    f"{investigation_report}\n\n"
-                    f"[evidence-gate] demoted from true-positive: "
-                    f"{len(unresolved)} of {len(citations)} citation(s) did not resolve: {bad}"
-                )
+            if verdict == "true-positive":
+                unresolved = [c for c in citations if not resolver(c)]
+                if not citations or unresolved:
+                    final_verdict = "needs-review"
+                    bad = [f"{c.path}:{c.symbol}" for c in unresolved]
+                    report = (
+                        f"{investigation_report}\n\n"
+                        f"[evidence-gate] demoted from true-positive: "
+                        f"{len(unresolved)} of {len(citations)} citation(s) did not resolve: {bad}"
+                    )
 
-        self._conn.execute(
-            """
-            UPDATE findings
-               SET verdict = ?, investigation_report = ?, updated_at = datetime('now')
-             WHERE id = ?
-            """,
-            (final_verdict, report, finding_id),
-        )
-        return final_verdict
+            self._conn.execute(
+                """
+                UPDATE findings
+                   SET verdict = ?, investigation_report = ?, updated_at = datetime('now')
+                 WHERE id = ?
+                """,
+                (final_verdict, report, finding_id),
+            )
+            return final_verdict
 
     def get(self, finding_id: int) -> sqlite3.Row | None:
-        return self._conn.execute(
-            "SELECT * FROM findings WHERE id = ?", (finding_id,)
-        ).fetchone()
+        with lock_for(self._conn):
+            return self._conn.execute(
+                "SELECT * FROM findings WHERE id = ?", (finding_id,)
+            ).fetchone()
 
     def count_by_verdict(self, verdict: Verdict) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM findings WHERE verdict = ?", (verdict,)
-        ).fetchone()
-        return row["n"]
+        with lock_for(self._conn):
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM findings WHERE verdict = ?", (verdict,)
+            ).fetchone()
+            return row["n"]

@@ -14,7 +14,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
-from foundry.substrate.db import write_lock_for
+from foundry.substrate.db import lock_for
 
 
 @dataclass(frozen=True)
@@ -30,27 +30,28 @@ class WorkQueue:
         self._lease_seconds = lease_seconds
 
     def enqueue(self, task_type: str, payload: dict) -> int:
-        cur = self._conn.execute(
-            "INSERT INTO work_queue (task_type, payload) VALUES (?, ?)",
-            (task_type, json.dumps(payload)),
-        )
-        return cur.lastrowid
+        with lock_for(self._conn):
+            cur = self._conn.execute(
+                "INSERT INTO work_queue (task_type, payload) VALUES (?, ?)",
+                (task_type, json.dumps(payload)),
+            )
+            return cur.lastrowid
 
     def claim_next(self, worker_id: str, task_type: str | None = None) -> Task | None:
         """Atomically claim one pending-or-lease-expired task.
 
-        Locked per-connection (see `foundry.substrate.db.write_lock_for`):
-        two separate WorkQueue instances on two separate connections (the
+        Locked per-connection (see `foundry.substrate.db.lock_for`): two
+        separate WorkQueue instances on two separate connections (the
         normal multi-agent-process shape, and what
         tests/test_finding_store.py::test_concurrent_claims_never_double_claim
         exercises) still race correctly through SQLite's own transaction
-        isolation, unaffected by this lock. This lock only protects against
-        two callers sharing the *same* connection object concurrently
-        (e.g. multiple DeepAgents tool calls from one LLM turn), where a
-        bare `BEGIN IMMEDIATE` from two threads on one connection raises
-        "cannot start a transaction within a transaction".
+        isolation, unaffected by this lock. This lock protects against two
+        callers sharing the *same* connection object concurrently (e.g.
+        multiple DeepAgents tool calls from one LLM turn), where even
+        non-transactional concurrent access on one connection can corrupt
+        cursor state, not just collide on `BEGIN IMMEDIATE`.
         """
-        with write_lock_for(self._conn):
+        with lock_for(self._conn):
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 if task_type:
@@ -99,23 +100,25 @@ class WorkQueue:
         return Task(id=row["id"], task_type=row["task_type"], payload=json.loads(row["payload"]))
 
     def heartbeat(self, task_id: int, worker_id: str) -> bool:
-        cur = self._conn.execute(
-            """
-            UPDATE work_queue
-               SET leased_until = datetime('now', ?)
-             WHERE id = ? AND claimed_by = ? AND status = 'claimed'
-            """,
-            (f"+{self._lease_seconds} seconds", task_id, worker_id),
-        )
-        return cur.rowcount > 0
+        with lock_for(self._conn):
+            cur = self._conn.execute(
+                """
+                UPDATE work_queue
+                   SET leased_until = datetime('now', ?)
+                 WHERE id = ? AND claimed_by = ? AND status = 'claimed'
+                """,
+                (f"+{self._lease_seconds} seconds", task_id, worker_id),
+            )
+            return cur.rowcount > 0
 
     def release(self, task_id: int, worker_id: str, status: str = "done") -> bool:
-        cur = self._conn.execute(
-            """
-            UPDATE work_queue
-               SET status = ?, claimed_by = NULL, leased_until = NULL
-             WHERE id = ? AND claimed_by = ?
-            """,
-            (status, task_id, worker_id),
-        )
-        return cur.rowcount > 0
+        with lock_for(self._conn):
+            cur = self._conn.execute(
+                """
+                UPDATE work_queue
+                   SET status = ?, claimed_by = NULL, leased_until = NULL
+                 WHERE id = ? AND claimed_by = ?
+                """,
+                (status, task_id, worker_id),
+            )
+            return cur.rowcount > 0

@@ -6,12 +6,19 @@ tools.
 Constitution XI (Persist Atomically): each section write replaces its row
 inside a single transaction; a reader never observes a half-written
 section.
+
+Every method here takes `foundry.substrate.db.lock_for(self._conn)` around
+its whole body -- not just the transactional write in `write_section()`.
+Python's sqlite3.Connection isn't safe for truly concurrent access from
+multiple threads even for plain reads, and the Cartographer subagent has
+five independent write tools DeepAgents can dispatch concurrently from one
+LLM turn, all sharing this connection.
 """
 from __future__ import annotations
 
 import sqlite3
 
-from foundry.substrate.db import write_lock_for
+from foundry.substrate.db import lock_for
 
 SECTIONS = (
     "architecture_overview",
@@ -32,19 +39,12 @@ class SecurityMapStore:
         return self._conn
 
     def write_section(self, section: str, content: str, source: str) -> None:
-        """Locked per-connection (see `foundry.substrate.db.write_lock_for`):
-        the Cartographer subagent has five independent write tools, one per
-        section, and DeepAgents can dispatch several of them concurrently
-        from a single LLM turn -- without this lock, two threads issuing
-        `BEGIN IMMEDIATE` on the same connection raise "cannot start a
-        transaction within a transaction".
-        """
         if section not in SECTIONS:
             raise ValueError(f"unknown security-map section: {section!r}")
         if source not in ("llm", "fallback"):
             raise ValueError(f"unknown source: {source!r}")
 
-        with write_lock_for(self._conn):
+        with lock_for(self._conn):
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 self._conn.execute("DELETE FROM security_map WHERE section = ?", (section,))
@@ -58,36 +58,45 @@ class SecurityMapStore:
                 raise
 
     def get_section(self, section: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT content FROM security_map WHERE section = ?", (section,)
-        ).fetchone()
-        return row["content"] if row else None
+        with lock_for(self._conn):
+            row = self._conn.execute(
+                "SELECT content FROM security_map WHERE section = ?", (section,)
+            ).fetchone()
+            return row["content"] if row else None
 
     def get_source(self, section: str) -> str | None:
-        row = self._conn.execute(
-            "SELECT source FROM security_map WHERE section = ?", (section,)
-        ).fetchone()
-        return row["source"] if row else None
+        with lock_for(self._conn):
+            row = self._conn.execute(
+                "SELECT source FROM security_map WHERE section = ?", (section,)
+            ).fetchone()
+            return row["source"] if row else None
 
     def is_complete(self) -> bool:
         """FR-036a: an empty security map is a Cartographer failure, not
         graceful degradation -- every section must have *some* content,
         LLM-authored or fallback, before this returns True."""
-        rows = self._conn.execute("SELECT section FROM security_map").fetchall()
-        present = {r["section"] for r in rows}
-        return set(SECTIONS) <= present
+        with lock_for(self._conn):
+            rows = self._conn.execute("SELECT section FROM security_map").fetchall()
+            present = {r["section"] for r in rows}
+            return set(SECTIONS) <= present
 
     def digest(self, max_chars_per_section: int = 500) -> str:
         """FR-035: a bounded summary small enough to front-load directly
-        into another role's prompt context."""
-        parts = []
-        for section in SECTIONS:
-            content = self.get_section(section)
-            if not content:
-                continue
-            trimmed = (
-                content if len(content) <= max_chars_per_section else content[:max_chars_per_section] + "…"
-            )
-            title = section.replace("_", " ").title()
-            parts.append(f"## {title}\n{trimmed}")
-        return "\n\n".join(parts)
+        into another role's prompt context. Locked across the whole loop
+        (the lock is reentrant, so the per-section get_section() calls
+        nest fine) for a consistent snapshot across all sections, not just
+        each one individually."""
+        with lock_for(self._conn):
+            parts = []
+            for section in SECTIONS:
+                content = self.get_section(section)
+                if not content:
+                    continue
+                trimmed = (
+                    content
+                    if len(content) <= max_chars_per_section
+                    else content[:max_chars_per_section] + "…"
+                )
+                title = section.replace("_", " ").title()
+                parts.append(f"## {title}\n{trimmed}")
+            return "\n\n".join(parts)
