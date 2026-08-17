@@ -55,7 +55,7 @@ this harness directly) turns each rule into a no-argument MCP tool that
 returns the rule's guidance text — designed for *authoring-time* use, where
 a coding assistant calls it while writing code.
 
-## How the Detector will use it (notebook 04, not built yet)
+## How the Detector will use it (Detector section, not built yet)
 
 Same underlying pattern, applied at *evaluation-time* instead of
 authoring-time: for each function the Indexer surfaces, the Detector calls
@@ -76,7 +76,7 @@ persistent multi-agent fleet outside Colab.
 The Detector's rule-sweep will default to `core/` (23 rules — matches the
 official MCP server's own default) with `owasp/` (the larger ~85-rule
 superset) available to opt into once the pipeline is proven. This is a
-judgment call, not a spec requirement — revisit once notebook 04 exists and
+judgment call, not a spec requirement — revisit once the Detector section exists and
 you've seen the `core/` sweep's signal-to-noise on the toy target.
 
 ## The rule-gap loop (FR-042, not built yet)

@@ -47,16 +47,16 @@ src/foundry/
     budget.py                    Coverage-before-yield stop condition
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
-  toy_target/vulnerable_app.py  Shared fixture target for every notebook from 02 onward
+  toy_target/vulnerable_app.py  Shared fixture target for every future notebook section
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
 tests/
   test_finding_store.py        12 tests proving Constitution I/III/IV/VI/VIII mechanically
 notebooks/
-  00_setup.ipynb                 Run once: clone, install, fetch rules, enter OpenAI key
-  01_substrate.ipynb             The ongoing build — every role gets a new section
-                                  appended here, run after 00_setup in the same
-                                  Colab runtime (see the notebook's own intro cell)
+  01_substrate.ipynb            The single, growing Colab notebook: a Setup section
+                                 (clone/install/fetch rules/OpenAI key) followed by a
+                                 Substrate section, with every future role appended
+                                 below as its own section — never a separate file
 ```
 
 Nothing here calls an LLM. That's deliberate — the finding lifecycle,
@@ -65,12 +65,12 @@ before any agent touches them.
 
 ## What's next (roadmap, not yet built)
 
-`00_setup.ipynb` stays a one-time bootstrap step. Everything from here on is
-a new **section appended to `01_substrate.ipynb`**, not a new notebook file —
-that keeps the whole build in one Colab runtime, so a later section never
-loses the environment (installed packages, OpenAI key, in-progress SQLite
-database) an earlier section set up. Each section still starts from the
-already-verified substrate above:
+Everything from here on is a new **section appended to `01_substrate.ipynb`**
+— setup and substrate are already sections one and two of that same file, not
+separate notebooks. That keeps the whole build in one Colab runtime, so a
+later section never loses the environment (installed packages, OpenAI key,
+in-progress SQLite database) an earlier section set up. Each section still
+starts from the already-verified substrate above:
 
 | Section | Adds |
 |---|---|

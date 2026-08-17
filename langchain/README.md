@@ -19,8 +19,8 @@ principle maps to actual code.
 | `src/foundry/substrate/` | `FindingStore` (evidence gate, fingerprinting), `WorkQueue` (atomic claim, heartbeat lease), `BudgetGovernor` (coverage-before-yield stop condition) |
 | `tests/test_finding_store.py` | 12 tests proving the constitution's III/IV/VI/VIII/I principles mechanically, no LLM |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
-| `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app used as the shared target from notebook 02 onward |
-| `notebooks/` | Colab-executable, one section per role, cumulative |
+| `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app used as the shared target from the Indexer section onward |
+| `notebooks/01_substrate.ipynb` | The single, growing Colab notebook — setup, substrate, and every role's section get appended here as they're built |
 | `docs/ARCHITECTURE.md` | Full writeup: shape, roadmap, quickstart |
 | `docs/CONSTITUTION_MAPPING.md` | Principle → enforcing code, updated as each piece lands |
 | `docs/CODEGUARD_INTEGRATION.md` | How the rule corpus is fetched, pinned, and (eventually) consumed by the Detector |
@@ -37,13 +37,14 @@ No API key needed for any of the above.
 
 ## Quickstart (Colab)
 
-Open `notebooks/00_setup.ipynb` in Colab (run once) — it clones this repo,
+Open `notebooks/01_substrate.ipynb` in Colab — this is the **one notebook**
+the whole harness gets built in. Its first section clones this repo,
 installs dependencies, fetches the CodeGuard rules, and prompts for an
-OpenAI key via `getpass` (not stored). Then, in the **same runtime**, open
-`notebooks/01_substrate.ipynb` — this is the one notebook the rest of the
-harness gets built in, section by section, so nothing later loses the
-environment `00_setup` set up. Its first section runs the same substrate
-proofs as the test suite, interactively, with no OpenAI calls yet.
+OpenAI key via `getpass` (not stored). Its second section runs the same
+substrate proofs as the test suite, interactively, with no OpenAI calls
+yet. Every later role (Indexer, Cartographer, ...) gets appended as a new
+section in this same notebook, not a separate file — so nothing later ever
+loses the environment setup established.
 
 ## Attribution
 
