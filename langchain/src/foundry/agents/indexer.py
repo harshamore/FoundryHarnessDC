@@ -10,15 +10,21 @@ from __future__ import annotations
 
 from deepagents.middleware.subagents import SubAgent
 
+from foundry.agents._middleware import (
+    NO_FILESYSTEM_EXPLORATION_WARNING,
+    minimal_filesystem_middleware,
+)
 from foundry.indexer.store import IndexStore
 from foundry.indexer.tools import build_index_tools
 
-INDEXER_SYSTEM_PROMPT = """\
+INDEXER_SYSTEM_PROMPT = f"""\
 You are the Indexer role in a security-evaluation harness. You have tools \
 to query a pre-built code index for one target: get_function_body, \
 get_callers, get_callees, find_symbol, full_text_search. You do not have \
 raw file access -- answer only from what these tools return, and say so \
-plainly when a tool reports nothing found rather than guessing.\
+plainly when a tool reports nothing found rather than guessing.
+
+{NO_FILESYSTEM_EXPLORATION_WARNING}\
 """
 
 
@@ -32,4 +38,5 @@ def build_indexer_subagent(store: IndexStore) -> SubAgent:
         ),
         "system_prompt": INDEXER_SYSTEM_PROMPT,
         "tools": build_index_tools(store),
+        "middleware": [minimal_filesystem_middleware()],
     }

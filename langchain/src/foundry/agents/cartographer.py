@@ -9,12 +9,16 @@ runs, so the map is never empty regardless of what the model produces.
 """
 from __future__ import annotations
 
+from foundry.agents._middleware import (
+    NO_FILESYSTEM_EXPLORATION_WARNING,
+    minimal_filesystem_middleware,
+)
 from foundry.cartographer.store import SecurityMapStore
 from foundry.cartographer.tools import build_cartographer_tools
 from foundry.indexer.store import IndexStore
 from foundry.indexer.tools import build_index_tools
 
-CARTOGRAPHER_SYSTEM_PROMPT = """\
+CARTOGRAPHER_SYSTEM_PROMPT = f"""\
 You are the Cartographer role in a security-evaluation harness. Your job \
 is to produce the security map for the target: architecture overview, \
 attack-surface enumeration, trust-boundary map, data-flow description, and \
@@ -26,7 +30,9 @@ one per section (write_architecture_overview, write_attack_surface, \
 write_trust_boundaries, write_data_flows, write_threat_model). Read the \
 code before writing each section -- ground every claim in what the tools \
 actually return, not assumption. Call every write tool at least once, even \
-if a section is brief for a small target.\
+if a section is brief for a small target.
+
+{NO_FILESYSTEM_EXPLORATION_WARNING}\
 """
 
 
@@ -40,4 +46,5 @@ def build_cartographer_subagent(security_map: SecurityMapStore, index: IndexStor
         ),
         "system_prompt": CARTOGRAPHER_SYSTEM_PROMPT,
         "tools": [*build_index_tools(index), *build_cartographer_tools(security_map)],
+        "middleware": [minimal_filesystem_middleware()],
     }

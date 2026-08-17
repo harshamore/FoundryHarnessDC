@@ -225,3 +225,21 @@ def test_build_indexer_subagent_shape(store):
     assert subagent["name"] == "indexer"
     assert "system_prompt" in subagent
     assert len(subagent["tools"]) == 5
+
+
+def test_indexer_subagent_restricts_default_filesystem_tools(store):
+    """Regression test: a subagent otherwise gets DeepAgents' default
+    filesystem middleware (ls/read_file/write_file/edit_file/delete/glob/
+    grep/execute) bound to an empty virtual filesystem regardless of the
+    `tools` list -- observed live as the model calling `ls /` instead of
+    the real index tools it was given, and reporting "no code discoverable"
+    for every section. build_indexer_subagent must override this down to
+    just the one tool the framework requires (read_file cannot be
+    excluded), not the full default set."""
+    subagent = build_indexer_subagent(store)
+    assert "middleware" in subagent
+    fs_middleware = subagent["middleware"][0]
+    tool_names = {t.name for t in fs_middleware.tools}
+    assert tool_names == {"read_file"}
+    assert "ls" not in tool_names
+    assert "glob" not in tool_names

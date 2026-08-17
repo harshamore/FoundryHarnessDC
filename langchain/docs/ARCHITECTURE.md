@@ -53,6 +53,9 @@ src/foundry/
     fallback.py                     Deterministic per-section fallback (FR-036a) — no model call
     tools.py                         LangChain tool wrappers, one per section (FR-030–034)
   agents/
+    _middleware.py                 Shared: restricts DeepAgents' default filesystem
+                                    tools (ls/glob/... bound to an empty virtual FS)
+                                    down to the one tool the framework requires
     indexer.py                     The Indexer as a DeepAgents SubAgent dict
     cartographer.py                  The Cartographer as a DeepAgents SubAgent dict
 data/
@@ -61,9 +64,11 @@ data/
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
 tests/
-  test_finding_store.py        12 tests proving Constitution I/III/IV/VI/VIII mechanically
-  test_indexer.py               12 tests proving FR-020/021/022/025/026 and the real resolver, no LLM
-  test_cartographer.py           10 tests proving FR-036a's fallback guarantee and the digest, no LLM
+  test_finding_store.py        13 tests proving Constitution I/III/IV/VI/VIII mechanically
+  test_indexer.py               14 tests proving FR-020/021/022/025/026, the real resolver, and
+                                 the filesystem-tool restriction, no LLM
+  test_cartographer.py           12 tests proving FR-036a's fallback guarantee, the digest, and
+                                  the filesystem-tool restriction, no LLM
 notebooks/
   01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate,
                                  Indexer, and Cartographer sections so far, with every
@@ -82,6 +87,20 @@ being empty. Two real OpenAI calls exist in this build so far, one per
 section's closing demo, each a small `create_deep_agent` main agent
 delegating through the `task` tool to prove the tool interface is usable by
 an LLM, not just by pytest.
+
+**A live-only failure mode worth knowing about**: `create_deep_agent`
+attaches a default filesystem middleware to every agent and subagent
+(`ls`/`read_file`/`glob`/... bound to an empty, in-memory virtual
+filesystem) regardless of the `tools` list a `SubAgent` dict specifies. The
+first live Cartographer run tried `ls /`, `ls /workspace`, and a recursive
+glob instead of the real index tools it was given, found nothing, and wrote
+"no target code discoverable" into every section (still correctly labeled
+`source=llm` — the write tools *were* called, just with bad content, which
+is exactly why FR-036a's structural fallback matters). `src/foundry/agents/
+_middleware.py::minimal_filesystem_middleware()` restricts this down to the
+one tool the framework requires (`read_file` can't be excluded), applied to
+both the Indexer and Cartographer subagents and their main agents; the
+system prompt also now explicitly tells the model to ignore it.
 
 ## What's next (roadmap, not yet built)
 

@@ -172,3 +172,19 @@ def test_build_cartographer_subagent_shape(security_map, index):
     assert "system_prompt" in subagent
     # 5 read-only index tools + 5 section-write tools
     assert len(subagent["tools"]) == 10
+
+
+def test_cartographer_subagent_restricts_default_filesystem_tools(security_map, index):
+    """Regression test for the live failure where the Cartographer tried
+    `ls /`, `ls /workspace`, and a recursive glob (DeepAgents' default
+    filesystem tools, bound to an empty virtual filesystem) instead of the
+    real index tools, then wrote "no target code discoverable" for every
+    section. Must be restricted to just the one tool the framework
+    requires (read_file), not the full default set."""
+    subagent = build_cartographer_subagent(security_map, index)
+    assert "middleware" in subagent
+    fs_middleware = subagent["middleware"][0]
+    tool_names = {t.name for t in fs_middleware.tools}
+    assert tool_names == {"read_file"}
+    assert "ls" not in tool_names
+    assert "glob" not in tool_names
