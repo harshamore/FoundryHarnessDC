@@ -55,6 +55,23 @@ CREATE TABLE IF NOT EXISTS budget_events (
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS functions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file TEXT NOT NULL,
+    name TEXT NOT NULL,
+    lineno INTEGER NOT NULL,
+    end_lineno INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    UNIQUE(file, name)
+);
+
+CREATE TABLE IF NOT EXISTS call_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file TEXT NOT NULL,
+    caller TEXT NOT NULL,
+    callee TEXT NOT NULL
+);
 """
 
 

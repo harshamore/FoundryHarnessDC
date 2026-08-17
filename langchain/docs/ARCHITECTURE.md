@@ -34,8 +34,7 @@ Reporter.
 
 ## What's actually implemented right now
 
-Only the **substrate** — the non-agent machinery every role will depend on —
-and it has no LLM dependency at all:
+The **substrate** (no LLM dependency at all) plus the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call):
 
 ```
 src/foundry/
@@ -45,36 +44,44 @@ src/foundry/
     finding_store.py           Fingerprint, Citation, FindingStore — the evidence gate lives here
     work_queue.py               Atomic claim/lease/heartbeat/release
     budget.py                    Coverage-before-yield stop condition
+  indexer/
+    parser.py                    AST-based function inventory + direct-call graph (FR-020/021) — no model call
+    store.py                      Persists the index; the query interface (FR-022); the real evidence-gate resolver
+    tools.py                       LangChain tool wrappers around the store
+  agents/
+    indexer.py                     The Indexer as a DeepAgents SubAgent dict
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
-  toy_target/vulnerable_app.py  Shared fixture target for every future notebook section
+  toy_target/vulnerable_app.py  Shared fixture target every notebook section parses/queries
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
 tests/
   test_finding_store.py        12 tests proving Constitution I/III/IV/VI/VIII mechanically
+  test_indexer.py               12 tests proving FR-020/021/022/025/026 and the real resolver, no LLM
 notebooks/
-  01_substrate.ipynb            The single, growing Colab notebook: a Setup section
-                                 (clone/install/fetch rules/OpenAI key) followed by a
-                                 Substrate section, with every future role appended
+  01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate, and
+                                 Indexer sections so far, with every future role appended
                                  below as its own section — never a separate file
 ```
 
-Nothing here calls an LLM. That's deliberate — the finding lifecycle,
-atomic claims, and the stop condition need to be trustworthy on their own
-before any agent touches them.
+The Indexer's actual indexing (parsing, call graph, persistence, queries) has
+no LLM dependency — FR-020 requires a deterministic parser, not model
+extraction. The one real OpenAI call in this build so far is the Indexer
+section's closing demo: a small `create_deep_agent` main agent delegating a
+question to the Indexer subagent through the `task` tool, to prove the query
+interface is actually usable by an LLM, not just by pytest.
 
 ## What's next (roadmap, not yet built)
 
 Everything from here on is a new **section appended to `01_substrate.ipynb`**
-— setup and substrate are already sections one and two of that same file, not
-separate notebooks. That keeps the whole build in one Colab runtime, so a
-later section never loses the environment (installed packages, OpenAI key,
-in-progress SQLite database) an earlier section set up. Each section still
-starts from the already-verified substrate above:
+— Setup, Substrate, and Indexer are already sections one through three of
+that same file, not separate notebooks. That keeps the whole build in one
+Colab runtime, so a later section never loses the environment (installed
+packages, OpenAI key, in-progress SQLite database) an earlier section set
+up. Each section still starts from the already-verified index above:
 
 | Section | Adds |
 |---|---|
-| Indexer | Parses `vulnerable_app.py`, exposes `get_function_body`/`get_callers`/`get_callees`/`find_symbol` as tools; first real OpenAI-backed DeepAgents subagent |
 | Cartographer | Security map (architecture, attack surface, trust boundaries) |
 | Detector, rule-sweep half | CodeGuard `core/` rules wired in as tools |
 | Detector, exploratory half | Free-form hunting, coverage-log aware |
