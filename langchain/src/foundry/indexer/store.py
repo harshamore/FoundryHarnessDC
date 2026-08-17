@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 
 from foundry.indexer.parser import CallEdge, FunctionDef
+from foundry.substrate.db import write_lock_for
 
 
 class IndexStore:
@@ -31,36 +32,39 @@ class IndexStore:
         Delete-then-insert for this file's rows only, inside a single
         transaction -- a reader never observes a partially-updated index for
         that file, and re-indexing an unchanged file leaves row counts
-        unchanged rather than accumulating duplicates.
+        unchanged rather than accumulating duplicates. Locked per-connection
+        (see `foundry.substrate.db.write_lock_for`) so concurrent tool calls
+        sharing this connection can't collide on `BEGIN IMMEDIATE`.
         """
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._conn.execute("DELETE FROM functions WHERE file = ?", (file_path,))
-            self._conn.execute("DELETE FROM call_edges WHERE file = ?", (file_path,))
+        with write_lock_for(self._conn):
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM functions WHERE file = ?", (file_path,))
+                self._conn.execute("DELETE FROM call_edges WHERE file = ?", (file_path,))
 
-            for fn in functions:
-                self._conn.execute(
-                    """
-                    INSERT INTO functions (file, name, lineno, end_lineno, source)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (fn.file, fn.name, fn.lineno, fn.end_lineno, fn.source),
-                )
+                for fn in functions:
+                    self._conn.execute(
+                        """
+                        INSERT INTO functions (file, name, lineno, end_lineno, source)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (fn.file, fn.name, fn.lineno, fn.end_lineno, fn.source),
+                    )
 
-            seen: set[tuple[str, str]] = set()
-            for edge in call_edges:
-                key = (edge.caller, edge.callee)
-                if key in seen:
-                    continue
-                seen.add(key)
-                self._conn.execute(
-                    "INSERT INTO call_edges (file, caller, callee) VALUES (?, ?, ?)",
-                    (file_path, edge.caller, edge.callee),
-                )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
+                seen: set[tuple[str, str]] = set()
+                for edge in call_edges:
+                    key = (edge.caller, edge.callee)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    self._conn.execute(
+                        "INSERT INTO call_edges (file, caller, callee) VALUES (?, ?, ?)",
+                        (file_path, edge.caller, edge.callee),
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def get_function_body(self, name: str) -> str | None:
         row = self._conn.execute("SELECT source FROM functions WHERE name = ?", (name,)).fetchone()

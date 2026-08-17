@@ -23,6 +23,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable, Literal
 
+from foundry.substrate.db import write_lock_for
+
 Verdict = Literal[
     "true-positive", "false-positive", "needs-review", "not-applicable", "code-quality"
 ]
@@ -68,30 +70,40 @@ class FindingStore:
         """Insert a candidate finding, deduplicating by fingerprint (FR-045).
 
         Returns (finding_id, fingerprint, was_new).
+
+        The dedup check and the insert both happen under this connection's
+        write lock (see `foundry.substrate.db.write_lock_for`) -- concurrent
+        tool calls sharing one connection (DeepAgents can dispatch several
+        from a single LLM turn) would otherwise race between the SELECT and
+        the INSERT, and a bare `BEGIN IMMEDIATE` from two threads on the
+        same connection raises "cannot start a transaction within a
+        transaction" regardless.
         """
         fp = fingerprint(normalized_path, symbol, vulnerability_class)
-        existing = self._conn.execute(
-            "SELECT id FROM findings WHERE fingerprint = ?", (fp,)
-        ).fetchone()
-        if existing:
-            return existing["id"], fp, False
 
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            cur = self._conn.execute(
-                """
-                INSERT INTO findings
-                    (fingerprint, normalized_path, symbol, vulnerability_class,
-                     description, technique)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (fp, normalized_path, symbol, vulnerability_class, description, technique),
-            )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
-        return cur.lastrowid, fp, True
+        with write_lock_for(self._conn):
+            existing = self._conn.execute(
+                "SELECT id FROM findings WHERE fingerprint = ?", (fp,)
+            ).fetchone()
+            if existing:
+                return existing["id"], fp, False
+
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO findings
+                        (fingerprint, normalized_path, symbol, vulnerability_class,
+                         description, technique)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (fp, normalized_path, symbol, vulnerability_class, description, technique),
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+            return cur.lastrowid, fp, True
 
     def assign_verdict(
         self,

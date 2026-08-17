@@ -10,6 +10,7 @@ IMMEDIATE` transaction serializes writes.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 SCHEMA = """
@@ -93,3 +94,37 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     return conn
+
+
+_connection_locks: dict[int, threading.Lock] = {}
+_locks_guard = threading.Lock()
+
+
+def write_lock_for(conn: sqlite3.Connection) -> threading.Lock:
+    """One lock per connection, shared by every store operating on it.
+
+    DeepAgents (and LangGraph's tool-calling machinery generally) can
+    dispatch multiple tool calls from a single LLM turn concurrently, on
+    real OS threads -- and every store built on a given `conn` shares that
+    same connection object. SQLite tracks one transaction at a time per
+    connection: two threads issuing `BEGIN IMMEDIATE` back to back on the
+    same connection raises "cannot start a transaction within a
+    transaction". Every store's write path takes this lock around its
+    whole BEGIN..COMMIT/ROLLBACK block, so concurrent tool calls serialize
+    instead of colliding.
+
+    Keyed by `id(conn)` rather than a weak reference -- `sqlite3.Connection`
+    doesn't support weak references. The connections this harness creates
+    live for an entire notebook/process session, so the registry never
+    meaningfully grows; the only real risk is a stale lock being reused if
+    a connection's id is recycled after garbage collection, which would at
+    worst cause unrelated connections to serialize unnecessarily, not any
+    correctness violation.
+    """
+    with _locks_guard:
+        key = id(conn)
+        lock = _connection_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _connection_locks[key] = lock
+        return lock

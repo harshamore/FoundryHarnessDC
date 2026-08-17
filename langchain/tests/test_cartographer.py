@@ -4,6 +4,7 @@ wrapping is checked structurally, not by invoking a model.
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -129,6 +130,35 @@ def test_digest_truncates_long_sections(security_map):
     digest = security_map.digest(max_chars_per_section=100)
     assert len(digest) < 2000
     assert "…" in digest
+
+
+# ---------------------------------------------------------------------------
+# Concurrent writes on one shared connection (DeepAgents can dispatch
+# several tool calls from a single LLM turn on real threads -- reproduces
+# the exact "cannot start a transaction within a transaction" bug hit when
+# the Cartographer subagent's five write tools were called concurrently)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_section_writes_on_shared_connection_do_not_collide(security_map):
+    errors: list[tuple[str, str]] = []
+    lock = threading.Lock()
+
+    def write(section: str) -> None:
+        try:
+            security_map.write_section(section, f"content for {section}", source="llm")
+        except Exception as e:  # noqa: BLE001 -- capturing for the assertion below
+            with lock:
+                errors.append((section, f"{type(e).__name__}: {e}"))
+
+    threads = [threading.Thread(target=write, args=(s,)) for s in SECTIONS]
+    [t.start() for t in threads]
+    [t.join(timeout=10) for t in threads]
+
+    assert errors == []
+    assert security_map.is_complete() is True
+    for section in SECTIONS:
+        assert security_map.get_section(section) == f"content for {section}"
 
 
 # ---------------------------------------------------------------------------

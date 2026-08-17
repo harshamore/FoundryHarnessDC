@@ -14,6 +14,8 @@ import json
 import sqlite3
 from dataclasses import dataclass
 
+from foundry.substrate.db import write_lock_for
+
 
 @dataclass(frozen=True)
 class Task:
@@ -35,51 +37,64 @@ class WorkQueue:
         return cur.lastrowid
 
     def claim_next(self, worker_id: str, task_type: str | None = None) -> Task | None:
-        """Atomically claim one pending-or-lease-expired task."""
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            if task_type:
-                row = self._conn.execute(
+        """Atomically claim one pending-or-lease-expired task.
+
+        Locked per-connection (see `foundry.substrate.db.write_lock_for`):
+        two separate WorkQueue instances on two separate connections (the
+        normal multi-agent-process shape, and what
+        tests/test_finding_store.py::test_concurrent_claims_never_double_claim
+        exercises) still race correctly through SQLite's own transaction
+        isolation, unaffected by this lock. This lock only protects against
+        two callers sharing the *same* connection object concurrently
+        (e.g. multiple DeepAgents tool calls from one LLM turn), where a
+        bare `BEGIN IMMEDIATE` from two threads on one connection raises
+        "cannot start a transaction within a transaction".
+        """
+        with write_lock_for(self._conn):
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                if task_type:
+                    row = self._conn.execute(
+                        """
+                        SELECT id, task_type, payload FROM work_queue
+                         WHERE (status = 'pending'
+                                OR (status = 'claimed' AND leased_until < datetime('now')))
+                           AND task_type = ?
+                         ORDER BY id LIMIT 1
+                        """,
+                        (task_type,),
+                    ).fetchone()
+                else:
+                    row = self._conn.execute(
+                        """
+                        SELECT id, task_type, payload FROM work_queue
+                         WHERE (status = 'pending'
+                                OR (status = 'claimed' AND leased_until < datetime('now')))
+                         ORDER BY id LIMIT 1
+                        """
+                    ).fetchone()
+
+                if row is None:
+                    self._conn.execute("COMMIT")
+                    return None
+
+                self._conn.execute(
                     """
-                    SELECT id, task_type, payload FROM work_queue
-                     WHERE (status = 'pending'
+                    UPDATE work_queue
+                       SET status = 'claimed',
+                           claimed_by = ?,
+                           leased_until = datetime('now', ?),
+                           attempts = attempts + 1
+                     WHERE id = ?
+                       AND (status = 'pending'
                             OR (status = 'claimed' AND leased_until < datetime('now')))
-                       AND task_type = ?
-                     ORDER BY id LIMIT 1
                     """,
-                    (task_type,),
-                ).fetchone()
-            else:
-                row = self._conn.execute(
-                    """
-                    SELECT id, task_type, payload FROM work_queue
-                     WHERE (status = 'pending'
-                            OR (status = 'claimed' AND leased_until < datetime('now')))
-                     ORDER BY id LIMIT 1
-                    """
-                ).fetchone()
-
-            if row is None:
+                    (worker_id, f"+{self._lease_seconds} seconds", row["id"]),
+                )
                 self._conn.execute("COMMIT")
-                return None
-
-            self._conn.execute(
-                """
-                UPDATE work_queue
-                   SET status = 'claimed',
-                       claimed_by = ?,
-                       leased_until = datetime('now', ?),
-                       attempts = attempts + 1
-                 WHERE id = ?
-                   AND (status = 'pending'
-                        OR (status = 'claimed' AND leased_until < datetime('now')))
-                """,
-                (worker_id, f"+{self._lease_seconds} seconds", row["id"]),
-            )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
         return Task(id=row["id"], task_type=row["task_type"], payload=json.loads(row["payload"]))
 

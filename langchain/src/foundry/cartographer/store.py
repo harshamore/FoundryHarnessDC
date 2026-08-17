@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from foundry.substrate.db import write_lock_for
+
 SECTIONS = (
     "architecture_overview",
     "attack_surface",
@@ -30,22 +32,30 @@ class SecurityMapStore:
         return self._conn
 
     def write_section(self, section: str, content: str, source: str) -> None:
+        """Locked per-connection (see `foundry.substrate.db.write_lock_for`):
+        the Cartographer subagent has five independent write tools, one per
+        section, and DeepAgents can dispatch several of them concurrently
+        from a single LLM turn -- without this lock, two threads issuing
+        `BEGIN IMMEDIATE` on the same connection raise "cannot start a
+        transaction within a transaction".
+        """
         if section not in SECTIONS:
             raise ValueError(f"unknown security-map section: {section!r}")
         if source not in ("llm", "fallback"):
             raise ValueError(f"unknown source: {source!r}")
 
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            self._conn.execute("DELETE FROM security_map WHERE section = ?", (section,))
-            self._conn.execute(
-                "INSERT INTO security_map (section, content, source) VALUES (?, ?, ?)",
-                (section, content, source),
-            )
-            self._conn.execute("COMMIT")
-        except Exception:
-            self._conn.execute("ROLLBACK")
-            raise
+        with write_lock_for(self._conn):
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM security_map WHERE section = ?", (section,))
+                self._conn.execute(
+                    "INSERT INTO security_map (section, content, source) VALUES (?, ?, ?)",
+                    (section, content, source),
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def get_section(self, section: str) -> str | None:
         row = self._conn.execute(

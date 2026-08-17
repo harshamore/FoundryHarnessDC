@@ -187,6 +187,50 @@ def test_concurrent_claims_never_double_claim(db_path):
     assert all(len(workers) == 1 for workers in claimed_by.values())  # never double-claimed
 
 
+def test_concurrent_queue_candidate_on_shared_connection_does_not_collide(db_path):
+    """A different concurrency shape than the test above: many threads
+    sharing ONE connection object, not one connection each. This is what
+    DeepAgents produces when an LLM turn dispatches several tool calls at
+    once (e.g. a Detector subagent's exploratory hunting queuing several
+    candidates "simultaneously") -- reproduces the exact "cannot start a
+    transaction within a transaction" bug hit when the Cartographer
+    subagent's write tools were called concurrently on a shared connection.
+    """
+    conn = _conn(db_path)
+    store = FindingStore(conn)
+
+    errors: list[tuple[int, str]] = []
+    results: list[tuple[int, str, bool]] = []
+    lock = threading.Lock()
+
+    def queue(i: int) -> None:
+        try:
+            # Half the threads target the SAME finding (must dedup to one
+            # row); half target distinct findings (must all succeed).
+            symbol = "shared_symbol" if i % 2 == 0 else f"distinct_symbol_{i}"
+            result = store.queue_candidate(
+                normalized_path="app.py",
+                symbol=symbol,
+                vulnerability_class="x",
+                description=f"from thread {i}",
+                technique="t",
+            )
+            with lock:
+                results.append(result)
+        except Exception as e:  # noqa: BLE001 -- capturing for the assertion below
+            with lock:
+                errors.append((i, f"{type(e).__name__}: {e}"))
+
+    n_threads = 20
+    threads = [threading.Thread(target=queue, args=(i,)) for i in range(n_threads)]
+    [t.start() for t in threads]
+    [t.join(timeout=10) for t in threads]
+
+    assert errors == []
+    distinct_ids = {r[0] for r in results}
+    assert len(distinct_ids) == 1 + (n_threads // 2)  # one shared id + one per distinct symbol
+
+
 # ---------------------------------------------------------------------------
 # Constitution III: liveness by heartbeat, never by clock
 # ---------------------------------------------------------------------------
