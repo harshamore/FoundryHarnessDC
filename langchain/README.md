@@ -6,12 +6,12 @@ as the Detector's rule corpus, built against Cisco's open-source [Foundry
 Security Spec](https://github.com/CiscoDevNet/foundry-security-spec) and its
 11-principle constitution.
 
-**Status:** the substrate (finding store, work queue, budget governor) and
-the Indexer (deterministic parser, query interface, first real OpenAI-backed
-DeepAgents subagent) are built and tested. Cartographer onward is a roadmap,
-built one notebook section at a time. See `docs/ARCHITECTURE.md` for the
-full picture and `docs/CONSTITUTION_MAPPING.md` for how each constitution
-principle maps to actual code.
+**Status:** the substrate (finding store, work queue, budget governor), the
+Indexer (deterministic parser, query interface), and the Cartographer
+(fallback-guaranteed, LLM-authored security map) are built and tested.
+Detector onward is a roadmap, built one notebook section at a time. See
+`docs/ARCHITECTURE.md` for the full picture and `docs/CONSTITUTION_MAPPING.md`
+for how each constitution principle maps to actual code.
 
 ## What's here
 
@@ -19,8 +19,9 @@ principle maps to actual code.
 |---|---|
 | `src/foundry/substrate/` | `FindingStore` (evidence gate, fingerprinting), `WorkQueue` (atomic claim, heartbeat lease), `BudgetGovernor` (coverage-before-yield stop condition) |
 | `src/foundry/indexer/` | `parser.py` (AST-based function inventory + call graph, no LLM), `store.py` (query interface + the real evidence-gate resolver), `tools.py` (LangChain tool wrappers) |
-| `src/foundry/agents/indexer.py` | The Indexer as a DeepAgents `SubAgent` |
-| `tests/test_finding_store.py`, `tests/test_indexer.py` | 24 tests total proving the constitution's I/III/IV/VI/VIII principles and FR-020/021/022/025/026 mechanically, no LLM |
+| `src/foundry/cartographer/` | `store.py` (security map + digest, FR-035), `fallback.py` (per-section deterministic fallback, FR-036a, no LLM), `tools.py` (LangChain tool wrappers) |
+| `src/foundry/agents/indexer.py`, `cartographer.py` | The Indexer and Cartographer as DeepAgents `SubAgent`s |
+| `tests/test_finding_store.py`, `test_indexer.py`, `test_cartographer.py` | 34 tests total proving the constitution's I/III/IV/VI/VIII/XI principles, FR-020/021/022/025/026, and FR-036a mechanically, no LLM |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared target every section parses/queries |
 | `notebooks/01_substrate.ipynb` | The single, growing Colab notebook — setup, substrate, and every role's section get appended here as they're built |
@@ -45,12 +46,15 @@ the whole harness gets built in. Section 1 (Setup) clones this repo,
 installs dependencies, fetches the CodeGuard rules, and prompts for an
 OpenAI key via `getpass` (not stored). Section 2 (Substrate) runs the same
 proofs as the test suite, interactively, no OpenAI calls yet. Section 3
-(Indexer) parses the toy target deterministically, then makes this build's
-first real OpenAI call — a small `create_deep_agent` delegating a question
-to the Indexer subagent, costing a small real amount on `gpt-5.6-luna`.
-Every later role (Cartographer, Detector, ...) gets appended as a new
-section in this same notebook, not a separate file — so nothing later ever
-loses the environment setup established.
+(Indexer) parses the toy target deterministically, then makes a real OpenAI
+call delegating a question to the Indexer subagent. Section 4 (Cartographer)
+writes a deterministic fallback for every security-map section first
+(FR-036a — the map is never empty), then a real OpenAI call lets the
+Cartographer subagent overwrite those with actual analysis. Each real call
+costs a small real amount on `gpt-5.6-luna`. Every later role (Detector,
+Triager, ...) gets appended as a new section in this same notebook, not a
+separate file — so nothing later ever loses the environment setup
+established.
 
 ## Attribution
 

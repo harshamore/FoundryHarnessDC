@@ -72,6 +72,15 @@ CREATE TABLE IF NOT EXISTS call_edges (
     caller TEXT NOT NULL,
     callee TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS security_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    section TEXT NOT NULL UNIQUE,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('llm', 'fallback')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

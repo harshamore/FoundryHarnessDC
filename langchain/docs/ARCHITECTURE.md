@@ -34,7 +34,7 @@ Reporter.
 
 ## What's actually implemented right now
 
-The **substrate** (no LLM dependency at all) plus the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call):
+The **substrate** (no LLM dependency), the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call), and the **Cartographer** (fallback-guaranteed, LLM-authored security map):
 
 ```
 src/foundry/
@@ -48,8 +48,13 @@ src/foundry/
     parser.py                    AST-based function inventory + direct-call graph (FR-020/021) — no model call
     store.py                      Persists the index; the query interface (FR-022); the real evidence-gate resolver
     tools.py                       LangChain tool wrappers around the store
+  cartographer/
+    store.py                       Persists the security map + digest (FR-035)
+    fallback.py                     Deterministic per-section fallback (FR-036a) — no model call
+    tools.py                         LangChain tool wrappers, one per section (FR-030–034)
   agents/
     indexer.py                     The Indexer as a DeepAgents SubAgent dict
+    cartographer.py                  The Cartographer as a DeepAgents SubAgent dict
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
   toy_target/vulnerable_app.py  Shared fixture target every notebook section parses/queries
@@ -58,31 +63,38 @@ scripts/
 tests/
   test_finding_store.py        12 tests proving Constitution I/III/IV/VI/VIII mechanically
   test_indexer.py               12 tests proving FR-020/021/022/025/026 and the real resolver, no LLM
+  test_cartographer.py           10 tests proving FR-036a's fallback guarantee and the digest, no LLM
 notebooks/
-  01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate, and
-                                 Indexer sections so far, with every future role appended
-                                 below as its own section — never a separate file
+  01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate,
+                                 Indexer, and Cartographer sections so far, with every
+                                 future role appended below as its own section —
+                                 never a separate file
 ```
 
 The Indexer's actual indexing (parsing, call graph, persistence, queries) has
 no LLM dependency — FR-020 requires a deterministic parser, not model
-extraction. The one real OpenAI call in this build so far is the Indexer
-section's closing demo: a small `create_deep_agent` main agent delegating a
-question to the Indexer subagent through the `task` tool, to prove the query
-interface is actually usable by an LLM, not just by pytest.
+extraction. The Cartographer is the opposite case: its real content IS meant
+to be LLM-authored, so the structural guarantee is FR-036a instead — every
+section gets a mechanically-derived fallback before any agent runs, proven
+in the notebook by intentionally letting the live agent call fail (invalid
+key) and confirming every section still reads `source=fallback` rather than
+being empty. Two real OpenAI calls exist in this build so far, one per
+section's closing demo, each a small `create_deep_agent` main agent
+delegating through the `task` tool to prove the tool interface is usable by
+an LLM, not just by pytest.
 
 ## What's next (roadmap, not yet built)
 
 Everything from here on is a new **section appended to `01_substrate.ipynb`**
-— Setup, Substrate, and Indexer are already sections one through three of
-that same file, not separate notebooks. That keeps the whole build in one
-Colab runtime, so a later section never loses the environment (installed
-packages, OpenAI key, in-progress SQLite database) an earlier section set
-up. Each section still starts from the already-verified index above:
+— Setup, Substrate, Indexer, and Cartographer are already sections one
+through four of that same file, not separate notebooks. That keeps the
+whole build in one Colab runtime, so a later section never loses the
+environment (installed packages, OpenAI key, in-progress SQLite database)
+an earlier section set up. Each section still starts from the
+already-verified index and security map above:
 
 | Section | Adds |
 |---|---|
-| Cartographer | Security map (architecture, attack surface, trust boundaries) |
 | Detector, rule-sweep half | CodeGuard `core/` rules wired in as tools |
 | Detector, exploratory half | Free-form hunting, coverage-log aware |
 | Triager | `assign_verdict` tool wired to the real Indexer-backed resolver; a deliberately fabricated citation is used to prove the demotion path live, not just in pytest |
