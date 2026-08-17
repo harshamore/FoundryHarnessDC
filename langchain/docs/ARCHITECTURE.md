@@ -53,8 +53,10 @@ scripts/
 tests/
   test_finding_store.py        12 tests proving Constitution I/III/IV/VI/VIII mechanically
 notebooks/
-  00_setup.ipynb                Clone, install, fetch rules, enter OpenAI key
-  01_substrate.ipynb            Same proofs as the test suite, run interactively
+  00_setup.ipynb                 Run once: clone, install, fetch rules, enter OpenAI key
+  01_substrate.ipynb             The ongoing build — every role gets a new section
+                                  appended here, run after 00_setup in the same
+                                  Colab runtime (see the notebook's own intro cell)
 ```
 
 Nothing here calls an LLM. That's deliberate — the finding lifecycle,
@@ -63,19 +65,23 @@ before any agent touches them.
 
 ## What's next (roadmap, not yet built)
 
-Each of these is its own Colab notebook, built one at a time, each starting
-from the already-verified substrate above:
+`00_setup.ipynb` stays a one-time bootstrap step. Everything from here on is
+a new **section appended to `01_substrate.ipynb`**, not a new notebook file —
+that keeps the whole build in one Colab runtime, so a later section never
+loses the environment (installed packages, OpenAI key, in-progress SQLite
+database) an earlier section set up. Each section still starts from the
+already-verified substrate above:
 
-| Notebook | Adds |
+| Section | Adds |
 |---|---|
-| 02 | Indexer — parses `vulnerable_app.py`, exposes `get_function_body`/`get_callers`/`get_callees`/`find_symbol` as tools; first real OpenAI-backed DeepAgents subagent |
-| 03 | Cartographer — security map (architecture, attack surface, trust boundaries) |
-| 04 | Detector, rule-sweep half — CodeGuard `core/` rules wired in as tools |
-| 05 | Detector, exploratory half — free-form hunting, coverage-log aware |
-| 06 | Triager — `assign_verdict` tool wired to the real Indexer-backed resolver; a deliberately fabricated citation is used to prove the demotion path live, not just in pytest |
-| 07 | Coverage-Guide + the real budget governor wired into a running fleet |
-| 08 | Reporter — per-finding markdown + rollup, local files |
-| 09 | Full pipeline — `create_deep_agent(...)` with all subagents wired together, end to end on the toy target, finding lifecycle inspected from SQLite |
+| Indexer | Parses `vulnerable_app.py`, exposes `get_function_body`/`get_callers`/`get_callees`/`find_symbol` as tools; first real OpenAI-backed DeepAgents subagent |
+| Cartographer | Security map (architecture, attack surface, trust boundaries) |
+| Detector, rule-sweep half | CodeGuard `core/` rules wired in as tools |
+| Detector, exploratory half | Free-form hunting, coverage-log aware |
+| Triager | `assign_verdict` tool wired to the real Indexer-backed resolver; a deliberately fabricated citation is used to prove the demotion path live, not just in pytest |
+| Coverage-Guide | The real budget governor wired into a running fleet |
+| Reporter | Per-finding markdown + rollup, local files |
+| Full pipeline | `create_deep_agent(...)` with all subagents wired together, end to end on the toy target, finding lifecycle inspected from SQLite |
 
 Constitution IX (sandbox by infrastructure) and the parts of III/V that only
 matter under a real multi-process fleet are explicitly deferred past the

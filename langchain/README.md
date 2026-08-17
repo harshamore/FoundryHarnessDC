@@ -37,9 +37,12 @@ No API key needed for any of the above.
 
 ## Quickstart (Colab)
 
-Open `notebooks/00_setup.ipynb` in Colab — it clones this repo, installs
-dependencies, fetches the CodeGuard rules, and prompts for an OpenAI key via
-`getpass` (not stored). Then `notebooks/01_substrate.ipynb` runs the same
+Open `notebooks/00_setup.ipynb` in Colab (run once) — it clones this repo,
+installs dependencies, fetches the CodeGuard rules, and prompts for an
+OpenAI key via `getpass` (not stored). Then, in the **same runtime**, open
+`notebooks/01_substrate.ipynb` — this is the one notebook the rest of the
+harness gets built in, section by section, so nothing later loses the
+environment `00_setup` set up. Its first section runs the same substrate
 proofs as the test suite, interactively, with no OpenAI calls yet.
 
 ## Attribution
