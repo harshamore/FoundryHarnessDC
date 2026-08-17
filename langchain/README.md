@@ -8,11 +8,12 @@ Security Spec](https://github.com/CiscoDevNet/foundry-security-spec) and its
 
 **Status:** the substrate (finding store, work queue, budget governor), the
 Indexer (deterministic parser, query interface), the Cartographer
-(fallback-guaranteed, LLM-authored security map), and the Detector
-(CodeGuard rule-sweep + exploratory hunting) are built and tested. Triager
-onward is a roadmap, built one notebook section at a time. See
-`docs/ARCHITECTURE.md` for the full picture and `docs/CONSTITUTION_MAPPING.md`
-for how each constitution principle maps to actual code.
+(fallback-guaranteed, LLM-authored security map), the Detector (CodeGuard
+rule-sweep + exploratory hunting), and the Triager (evidence-gated verdicts)
+are built and tested. Coverage-Guide onward is a roadmap, built one notebook
+section at a time. See `docs/ARCHITECTURE.md` for the full picture and
+`docs/CONSTITUTION_MAPPING.md` for how each constitution principle maps to
+actual code.
 
 ## What's here
 
@@ -23,8 +24,9 @@ for how each constitution principle maps to actual code.
 | `src/foundry/cartographer/` | `store.py` (security map + digest, FR-035), `fallback.py` (per-section deterministic fallback, FR-036a, no LLM), `tools.py` (LangChain tool wrappers) |
 | `src/foundry/codeguard/` | `loader.py` (parses the vendored rule corpus, FR-041, no LLM), `tools.py` (`list_rules`/`get_rule`) |
 | `src/foundry/detector/tools.py` | `queue_candidate`/`record_rule_gap` — the Detector's only writes, both internal-only (Constitution II) |
-| `src/foundry/agents/indexer.py`, `cartographer.py`, `detector.py`, `_middleware.py` | The Indexer, Cartographer, and Detector (two SubAgents: rule-sweep + exploratory) as DeepAgents `SubAgent`s, plus the shared filesystem-tool restriction |
-| `tests/` (6 files) | 59 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles, FR-020/021/022/025/026/031/041/042, and FR-036a mechanically, no LLM |
+| `src/foundry/triager/tools.py` | `list_candidates`/`get_candidate`/`assign_verdict` — `assign_verdict` binds the real Indexer resolver as a closure the model can't see or influence |
+| `src/foundry/agents/` | The Indexer, Cartographer, Detector (two SubAgents: rule-sweep + exploratory), and Triager as DeepAgents `SubAgent`s, plus `_middleware.py`'s shared filesystem-tool restriction |
+| `tests/` (7 files) | 71 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles, FR-020/021/022/025/026/031/041/042/054, and FR-036a mechanically, no LLM |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared target every section parses/queries |
 | `notebooks/01_substrate.ipynb` | The single, growing Colab notebook — setup, substrate, and every role's section get appended here as they're built |
@@ -57,11 +59,15 @@ Cartographer subagent overwrite those with actual analysis. Section 5
 (Detector) loads the CodeGuard rule corpus, then makes two real OpenAI
 calls — rule-sweep (systematic, checks every function against the corpus)
 and exploratory hunting (free-form, front-loaded with the Cartographer's
-security-map digest) — queuing candidate findings into SQLite. Each real
-call costs a small real amount on `gpt-5.6-luna`. Every later role
-(Triager, ...) gets appended as a new section in this same notebook, not a
-separate file — so nothing later ever loses the environment setup
-established.
+security-map digest) — queuing candidate findings into SQLite. Section 6
+(Triager) makes one more real OpenAI call, investigating every queued
+candidate and assigning verdicts through the same evidence gate the
+Substrate section proved standalone — a citation naming a symbol that
+doesn't actually exist gets auto-demoted from `true-positive` to
+`needs-review`, live. Each real call costs a small real amount on
+`gpt-5.6-luna`. Every later role (Coverage-Guide, ...) gets appended as a
+new section in this same notebook, not a separate file — so nothing later
+ever loses the environment setup established.
 
 ## Attribution
 

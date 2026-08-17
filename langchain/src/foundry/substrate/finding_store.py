@@ -119,10 +119,18 @@ class FindingStore:
         """Constitution I: `true-positive` requires every citation to resolve.
 
         Mirrors spec.md FR-052 (evidence gate) and FR-088 (auto-demotion on a
-        citation that does not resolve to real code).
+        citation that does not resolve to real code). FR-054: "A verdict
+        without an investigation report MUST be rejected by the finding
+        store" -- a bare label is an unverifiable model assertion; the
+        reasoning is what a reviewer audits, the label is just an index
+        into it.
         """
         if verdict not in _VERDICTS:
             raise ValueError(f"unknown verdict: {verdict!r}")
+        if not investigation_report or not investigation_report.strip():
+            raise ValueError(
+                "assign_verdict requires a non-empty investigation_report (FR-054)"
+            )
 
         with lock_for(self._conn):
             final_verdict: Verdict = verdict
@@ -154,6 +162,14 @@ class FindingStore:
             return self._conn.execute(
                 "SELECT * FROM findings WHERE id = ?", (finding_id,)
             ).fetchone()
+
+    def list_untriaged(self) -> list[sqlite3.Row]:
+        """Every candidate the Detector queued that no verdict has been
+        assigned to yet -- what a Triager works through (spec.md §5.5)."""
+        with lock_for(self._conn):
+            return self._conn.execute(
+                "SELECT * FROM findings WHERE verdict IS NULL ORDER BY id"
+            ).fetchall()
 
     def count_by_verdict(self, verdict: Verdict) -> int:
         with lock_for(self._conn):
