@@ -161,3 +161,18 @@ class FindingStore:
                 "SELECT COUNT(*) AS n FROM findings WHERE verdict = ?", (verdict,)
             ).fetchone()
             return row["n"]
+
+    def record_rule_gap(self, finding_fingerprint: str, vulnerability_class: str, pattern: str) -> None:
+        """FR-042: when the Detector's exploratory hunting confirms a
+        finding no CodeGuard rule would have produced, record the gap --
+        the input to growing the rule corpus (spec.md §5.4's rule-gap loop,
+        Constitution's detection-compounds-into-prevention argument)."""
+        with lock_for(self._conn):
+            self._conn.execute(
+                "INSERT INTO rule_gaps (finding_fingerprint, vulnerability_class, pattern) VALUES (?, ?, ?)",
+                (finding_fingerprint, vulnerability_class, pattern),
+            )
+
+    def list_rule_gaps(self) -> list[sqlite3.Row]:
+        with lock_for(self._conn):
+            return self._conn.execute("SELECT * FROM rule_gaps ORDER BY id").fetchall()

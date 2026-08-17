@@ -55,39 +55,60 @@ this harness directly) turns each rule into a no-argument MCP tool that
 returns the rule's guidance text — designed for *authoring-time* use, where
 a coding assistant calls it while writing code.
 
-## How the Detector will use it (Detector section, not built yet)
+## How the Detector uses it
 
 Same underlying pattern, applied at *evaluation-time* instead of
-authoring-time: for each function the Indexer surfaces, the Detector calls
-the relevant rule tool(s) to fetch the check text, then reasons about the
-function body (already in context from the Indexer's call-graph query)
-against it. This satisfies spec.md FR-037 without hand-writing detection
-rules from scratch.
+authoring-time: the rule-sweep subagent (`build_detector_rule_sweep_subagent`
+in `src/foundry/agents/detector.py`) has tools to list and fetch rules
+(`list_rules`/`get_rule`) alongside the Indexer's query tools
+(`get_function_body`/`get_callers`/`get_callees`), and reasons about each
+function's body against whichever rules plausibly apply. This satisfies
+spec.md FR-037 without hand-writing detection rules from scratch.
 
 Rather than running the upstream `fastmcp` HTTP server (unnecessary
 complexity for a Colab-executed notebook), `src/foundry/codeguard/loader.py`
-(not built yet) will parse the vendored markdown files directly and expose
-`list_rules(category)` / `get_rule(rule_id)` as plain LangChain tools. This
-can be swapped for the real MCP server later if the harness runs as a
-persistent multi-agent fleet outside Colab.
+parses the vendored markdown files directly (mirroring the upstream
+`RuleProcessor`'s frontmatter-splitting logic) and
+`src/foundry/codeguard/tools.py` exposes `list_rules`/`get_rule` as plain
+LangChain tools. This can be swapped for the real MCP server later if the
+harness runs as a persistent multi-agent fleet outside Colab.
+
+**Not implemented, by design, for this toy target**: FR-049 (front-loading
+each function's body/callers/callees directly into the detection call's
+initial prompt, rather than relying on the model to fetch them via tools)
+— the toy target has 5 functions, so the tool-call overhead this optimizes
+away is negligible here; worth revisiting if a larger target makes rule-sweep
+cost noticeably higher than it needs to be.
 
 ## Rule breadth: `core/` first
 
-The Detector's rule-sweep will default to `core/` (23 rules — matches the
+The Detector's rule-sweep defaults to `core/` (23 rules — matches the
 official MCP server's own default) with `owasp/` (the larger ~85-rule
-superset) available to opt into once the pipeline is proven. This is a
-judgment call, not a spec requirement — revisit once the Detector section exists and
-you've seen the `core/` sweep's signal-to-noise on the toy target.
+superset) available via `load_rules(rules_dir, categories=("core", "owasp"))`
+once the pipeline is proven. This is a judgment call, not a spec
+requirement — `data/toy_target/vulnerable_app.py`'s three seeded
+vulnerabilities (SQL injection, hardcoded credential, path traversal) are
+all `core` rules, so `core/` alone is sufficient to exercise the pipeline
+end to end.
 
-## The rule-gap loop (FR-042, not built yet)
+## The rule-gap loop (FR-042)
 
-When the Detector's *exploratory* mode (free-form hunting) confirms a
-`true-positive` that no CodeGuard rule would have produced, the Triager
-records a **rule-gap** entry (`rule_gaps` table, already in the substrate
-schema — see `src/foundry/substrate/db.py`). This is the seam where a
-finding this harness discovers on its own could eventually generalize into
-a new rule and contribute back upstream — the spec's "detection investment
-compounds into prevention" argument (spec.md §5.4).
+When the Detector's *exploratory* subagent is confident a finding is real
+and can name why no CodeGuard rule would have produced it, it calls
+`record_rule_gap` directly (`src/foundry/detector/tools.py`), writing to
+the `rule_gaps` table that's existed in the schema since the Substrate
+section. **A deliberate deviation from the spec's literal text**: FR-042
+says "the Triager MUST record a rule-gap entry" — since no Triager exists
+yet, this build lets the Detector's exploratory subagent record it
+directly instead of waiting. Revisit once the Triager section lands:
+either the Triager takes over this responsibility (matching the spec
+exactly, gated on an actual `true-positive` verdict rather than the
+Detector's own confidence) or the two responsibilities are deliberately
+split, but that decision shouldn't be made silently — flagging it here.
+This is the seam where a finding this harness discovers on its own could
+eventually generalize into a new rule and contribute back upstream — the
+spec's "detection investment compounds into prevention" argument
+(spec.md §5.4).
 
 ## License
 

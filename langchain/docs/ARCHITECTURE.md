@@ -34,14 +34,15 @@ Reporter.
 
 ## What's actually implemented right now
 
-The **substrate** (no LLM dependency), the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call), and the **Cartographer** (fallback-guaranteed, LLM-authored security map):
+The **substrate** (no LLM dependency), the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call), the **Cartographer** (fallback-guaranteed, LLM-authored security map), and the **Detector** (rule-sweep + exploratory hunting):
 
 ```
 src/foundry/
   config.py                    Settings: db path, CodeGuard rules dir, lease seconds
   substrate/
     db.py                      SQLite connection: WAL mode, schema, row access by name
-    finding_store.py           Fingerprint, Citation, FindingStore — the evidence gate lives here
+    finding_store.py           Fingerprint, Citation, FindingStore — the evidence gate lives here;
+                                also record_rule_gap/list_rule_gaps (FR-042)
     work_queue.py               Atomic claim/lease/heartbeat/release
     budget.py                    Coverage-before-yield stop condition
   indexer/
@@ -54,27 +55,38 @@ src/foundry/
     store.py                       Persists the security map + digest (FR-035)
     fallback.py                     Deterministic per-section fallback (FR-036a) — no model call
     tools.py                         LangChain tool wrappers, one per section (FR-030–034)
+  codeguard/
+    loader.py                       Parses the vendored rule corpus (FR-041) — no model call
+    tools.py                         LangChain tool wrappers: list_rules, get_rule
+  detector/
+    tools.py                        LangChain tool wrappers: queue_candidate, record_rule_gap
   agents/
     _middleware.py                 Shared: restricts DeepAgents' default filesystem
                                     tools (ls/glob/... bound to an empty virtual FS)
                                     down to the one tool the framework requires
     indexer.py                     The Indexer as a DeepAgents SubAgent dict
     cartographer.py                  The Cartographer as a DeepAgents SubAgent dict
+    detector.py                       Two SubAgent dicts: rule-sweep (FR-037) and
+                                       exploratory (FR-040)
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
   toy_target/vulnerable_app.py  Shared fixture target every notebook section parses/queries
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
 tests/
-  test_finding_store.py        13 tests proving Constitution I/III/IV/VI/VIII mechanically
+  test_finding_store.py        15 tests proving Constitution I/III/IV/VI/VIII mechanically,
+                                plus rule-gap recording (FR-042)
   test_indexer.py               17 tests proving FR-020/021/022/025/026, the real resolver,
                                  the filesystem-tool restriction, and decorator capture, no LLM
   test_cartographer.py           12 tests proving FR-036a's fallback guarantee, the digest, and
                                   the filesystem-tool restriction, no LLM
+  test_codeguard.py               9 tests proving the rule corpus loads and parses correctly, no LLM
+  test_detector.py                 8 tests proving the tool wrappers, both SubAgent shapes, and
+                                    the front-loaded security-map digest, no LLM
 notebooks/
   01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate,
-                                 Indexer, and Cartographer sections so far, with every
-                                 future role appended below as its own section —
+                                 Indexer, Cartographer, and Detector sections so far, with
+                                 every future role appended below as its own section —
                                  never a separate file
 ```
 
@@ -85,10 +97,24 @@ to be LLM-authored, so the structural guarantee is FR-036a instead — every
 section gets a mechanically-derived fallback before any agent runs, proven
 in the notebook by intentionally letting the live agent call fail (invalid
 key) and confirming every section still reads `source=fallback` rather than
-being empty. Two real OpenAI calls exist in this build so far, one per
-section's closing demo, each a small `create_deep_agent` main agent
+being empty. The Detector is LLM-authored like the Cartographer, but its
+structural guarantee is Constitution II instead: neither the rule-sweep nor
+the exploratory subagent has any tool that reaches a human or an issue
+tracker, only `queue_candidate` — so no matter what either agent decides,
+"surface only what survives" holds by construction. Four real OpenAI calls
+exist in this build so far (Indexer, Cartographer, Detector rule-sweep,
+Detector exploratory), each a small `create_deep_agent` main agent
 delegating through the `task` tool to prove the tool interface is usable by
 an LLM, not just by pytest.
+
+**Deferred by design, not forgotten**: FR-046 (exploratory Detector instances
+consult a coverage log before choosing an area, so parallel agents don't
+converge on the same obvious surfaces) needs the Coverage-Guide role, not
+built yet — irrelevant for a single-agent, single-target toy run anyway,
+since there's no fleet to coordinate. FR-038 (dependency scanning) is
+skipped for the same reason FR-039 (secret scanning) mostly overlaps with
+CodeGuard's own `hardcoded-credentials` rule: the toy target has no
+third-party dependency manifest to scan.
 
 **A live-only failure mode worth knowing about**: `create_deep_agent`
 attaches a default filesystem middleware to every agent and subagent
@@ -107,17 +133,15 @@ system prompt also now explicitly tells the model to ignore it.
 ## What's next (roadmap, not yet built)
 
 Everything from here on is a new **section appended to `01_substrate.ipynb`**
-— Setup, Substrate, Indexer, and Cartographer are already sections one
-through four of that same file, not separate notebooks. That keeps the
+— Setup, Substrate, Indexer, Cartographer, and Detector are already sections
+one through five of that same file, not separate notebooks. That keeps the
 whole build in one Colab runtime, so a later section never loses the
 environment (installed packages, OpenAI key, in-progress SQLite database)
 an earlier section set up. Each section still starts from the
-already-verified index and security map above:
+already-verified index, security map, and candidate findings above:
 
 | Section | Adds |
 |---|---|
-| Detector, rule-sweep half | CodeGuard `core/` rules wired in as tools |
-| Detector, exploratory half | Free-form hunting, coverage-log aware |
 | Triager | `assign_verdict` tool wired to the real Indexer-backed resolver; a deliberately fabricated citation is used to prove the demotion path live, not just in pytest |
 | Coverage-Guide | The real budget governor wired into a running fleet |
 | Reporter | Per-finding markdown + rollup, local files |
