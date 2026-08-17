@@ -45,7 +45,9 @@ src/foundry/
     work_queue.py               Atomic claim/lease/heartbeat/release
     budget.py                    Coverage-before-yield stop condition
   indexer/
-    parser.py                    AST-based function inventory + direct-call graph (FR-020/021) — no model call
+    parser.py                    AST-based function inventory (decorators included, e.g. Flask
+                                  `@app.route(...)`, for FR-031) + direct-call graph (FR-020/021,
+                                  decorators deliberately excluded here) — no model call
     store.py                      Persists the index; the query interface (FR-022); the real evidence-gate resolver
     tools.py                       LangChain tool wrappers around the store
   cartographer/
@@ -65,8 +67,8 @@ scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
 tests/
   test_finding_store.py        13 tests proving Constitution I/III/IV/VI/VIII mechanically
-  test_indexer.py               14 tests proving FR-020/021/022/025/026, the real resolver, and
-                                 the filesystem-tool restriction, no LLM
+  test_indexer.py               17 tests proving FR-020/021/022/025/026, the real resolver,
+                                 the filesystem-tool restriction, and decorator capture, no LLM
   test_cartographer.py           12 tests proving FR-036a's fallback guarantee, the digest, and
                                   the filesystem-tool restriction, no LLM
 notebooks/

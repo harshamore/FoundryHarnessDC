@@ -50,6 +50,39 @@ def test_parser_finds_all_functions():
     assert EXPECTED_FUNCTIONS <= names
 
 
+def test_decorators_are_included_in_extracted_source():
+    """FR-031 (attack-surface enumeration) needs route/exposure metadata,
+    which lives only in decorators like `@app.route(...)` -- `get_function_body`
+    must show them, not just the `def` line onward."""
+    result = index_file(TARGET, REPO_ROOT)
+    by_name = {fn.name: fn for fn in result.functions}
+
+    users_endpoint = by_name["users_endpoint"]
+    assert '@app.route("/users")' in users_endpoint.source
+    assert users_endpoint.source.startswith("@app.route")
+
+    files_endpoint = by_name["files_endpoint"]
+    assert '@app.route("/files/<path:filename>")' in files_endpoint.source
+
+    # A function with no decorator is unaffected: source still starts at `def`.
+    get_user_by_name = by_name["get_user_by_name"]
+    assert get_user_by_name.source.startswith("def get_user_by_name")
+
+
+def test_decorated_function_lineno_starts_at_the_decorator():
+    result = index_file(TARGET, REPO_ROOT)
+    by_name = {fn.name: fn for fn in result.functions}
+    users_endpoint = by_name["users_endpoint"]
+
+    # `lineno` must point at the actual decorator line in the file, not the
+    # `def` line -- cross-check against the raw source directly (not just
+    # against `.source`, which is derived from the same lineno and would
+    # pass even if both were wrong the same way).
+    raw_lines = TARGET.read_text().splitlines()
+    assert raw_lines[users_endpoint.lineno - 1].strip() == '@app.route("/users")'
+    assert raw_lines[users_endpoint.lineno].strip() == "def users_endpoint():"
+
+
 def test_parser_is_deterministic():
     # Two independent parses of the same file produce identical results --
     # there is no model call or nondeterminism anywhere in FR-020's inventory.
@@ -70,6 +103,18 @@ def test_call_graph_direct_calls_captured():
     assert ("get_user_by_name", "get_db") in edges
     assert ("users_endpoint", "get_user_by_name") in edges
     assert ("files_endpoint", "read_uploaded_file") in edges
+
+
+def test_call_graph_still_excludes_decorators():
+    """Regression guard: decorators are now included in `source` (see
+    test_decorators_are_included_in_extracted_source above), but must still
+    be excluded from the call graph -- a decorator executes at def-time, not
+    call-time, and including it produced a misleading `-> route` edge
+    before this was first fixed."""
+    result = index_file(TARGET, REPO_ROOT)
+    edges = {(e.caller, e.callee) for e in result.call_edges}
+    assert ("users_endpoint", "route") not in edges
+    assert ("files_endpoint", "route") not in edges
 
 
 # ---------------------------------------------------------------------------

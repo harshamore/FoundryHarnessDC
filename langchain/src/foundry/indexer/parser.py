@@ -63,11 +63,21 @@ def index_file(path: Path, repo_root: Path) -> IndexResult:
     edges: list[CallEdge] = []
 
     for name, node in function_nodes.items():
+        # Include any decorators in the extracted range, so `get_function_body`
+        # shows e.g. `@app.route("/users")` above the `def` line. FR-031
+        # (attack-surface enumeration) needs route/exposure metadata exactly
+        # like this, and it lives only in decorators -- excluding them (as
+        # the call-graph walk below deliberately still does, for a different
+        # reason) meant a Cartographer reading only `source` could never see
+        # it, even though the information exists in the file. `node.lineno`
+        # itself already points at the `def` line, not the decorator, so this
+        # is the one place decorators need to be added back in by hand.
+        start_line = node.decorator_list[0].lineno if node.decorator_list else node.lineno
         end = getattr(node, "end_lineno", node.lineno)
-        body_source = "\n".join(source_lines[node.lineno - 1 : end])
+        body_source = "\n".join(source_lines[start_line - 1 : end])
         functions.append(
             FunctionDef(
-                name=name, file=normalized_path, lineno=node.lineno, end_lineno=end, source=body_source
+                name=name, file=normalized_path, lineno=start_line, end_lineno=end, source=body_source
             )
         )
         # Walk only the function's own body statements -- not `decorator_list`
