@@ -62,8 +62,8 @@ This build's mapping:
 
 | Galileo concept | Foundry Harness equivalent |
 |---|---|
-| `project` | `foundry-harness` |
-| `log_stream` | `colab` |
+| `project` | User-entered in the notebook (falls back to `DEFAULT_PROJECT`, `"foundry-harness"`, if left blank) |
+| `log_stream` | `colab` (fixed) |
 | `trace` | Each `agent.invoke(...)` call — 9 in the notebook today |
 | `run_name` (trace label) | The role that produced it: `indexer`, `cartographer`, `detector-rule-sweep`, `detector-exploratory`, `detector-directed`, `triager`, `coverage-guide`, `reporter`, `full-pipeline` |
 | `agent` span | Each subagent DeepAgents' `task` tool delegates to |
@@ -71,7 +71,13 @@ This build's mapping:
 | `llm` span | Every underlying `ChatOpenAI` call |
 
 `project`/`log_stream` are get-or-created by name on first use — no manual
-setup required in the Galileo console before running the notebook.
+setup required in the Galileo console before running the notebook, even
+if you've already created a project by that name yourself (as opposed to
+letting the SDK create it). The project-name prompt follows the same
+env-var-guard shape as the API key cell: setting `GALILEO_PROJECT` ahead of
+time (e.g. a Colab secret, or already answered once this session) skips
+the prompt — this is also the underlying `GalileoLogger`'s own env var, not
+one this build invented.
 
 ## Wiring
 
