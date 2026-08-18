@@ -82,6 +82,24 @@ CREATE TABLE IF NOT EXISTS security_map (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS coverage_checklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    area TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    bar TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    closed_at TEXT,
+    UNIQUE(area, goal)
+);
+
+CREATE TABLE IF NOT EXISTS coverage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    area TEXT NOT NULL,
+    technique TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

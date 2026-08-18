@@ -34,7 +34,7 @@ Reporter.
 
 ## What's actually implemented right now
 
-The **substrate** (no LLM dependency), the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call), the **Cartographer** (fallback-guaranteed, LLM-authored security map), the **Detector** (rule-sweep + exploratory hunting), and the **Triager** (evidence-gated verdicts):
+The **substrate** (no LLM dependency), the **Indexer** (deterministic parsing, one real OpenAI-backed subagent call), the **Cartographer** (fallback-guaranteed, LLM-authored security map), the **Detector** (rule-sweep + exploratory hunting), the **Triager** (evidence-gated verdicts), and **Coverage-Guide** (a mechanical checklist paired with the Substrate section's budget governor):
 
 ```
 src/foundry/
@@ -44,8 +44,11 @@ src/foundry/
     finding_store.py           Fingerprint, Citation, FindingStore — the evidence gate lives here
                                 (now rejects a bare verdict with no report, FR-054);
                                 also record_rule_gap/list_rule_gaps (FR-042), list_untriaged
-    work_queue.py               Atomic claim/lease/heartbeat/release
-    budget.py                    Coverage-before-yield stop condition
+    work_queue.py               Atomic claim/lease/heartbeat/release — now consumed for real
+                                 by Coverage-Guide's directed tasks (FR-070), not just its own
+                                 concurrency tests
+    budget.py                    Coverage-before-yield stop condition — now fed a real
+                                  coverage-complete flag, not a hand-typed boolean
   indexer/
     parser.py                    AST-based function inventory (decorators included, e.g. Flask
                                   `@app.route(...)`, for FR-031) + direct-call graph (FR-020/021,
@@ -64,6 +67,10 @@ src/foundry/
   triager/
     tools.py                        LangChain tool wrappers: list_candidates, get_candidate,
                                      assign_verdict (binds the real resolver as a closure)
+  coverage/
+    store.py                        CoverageStore: the whole FR-067/069/070/071/074 mechanism
+                                     — no model call anywhere in it
+    tools.py                        One LangChain tool: get_coverage_report (read-only)
   agents/
     _middleware.py                 Shared: restricts DeepAgents' default filesystem
                                     tools (ls/glob/... bound to an empty virtual FS)
@@ -73,6 +80,8 @@ src/foundry/
     detector.py                       Two SubAgent dicts: rule-sweep (FR-037) and
                                        exploratory (FR-040)
     triager.py                         The Triager as a DeepAgents SubAgent dict
+    coverage_guide.py                   The Coverage-Guide as a DeepAgents SubAgent dict
+                                         (FR-073 only — the narrative, not the mechanism)
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
   toy_target/vulnerable_app.py  Shared fixture target every notebook section parses/queries
@@ -90,11 +99,14 @@ tests/
   test_triager.py                  12 tests proving FR-054, the evidence-gate demotion through
                                     the tool layer (not just FindingStore directly), and the
                                     SubAgent shape, no LLM
+  test_coverage.py                  18 tests proving FR-067/068/069/070/071/074 and a direct
+                                     integration test wiring CoverageStore to the real
+                                     BudgetGovernor, no LLM
 notebooks/
   01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate,
-                                 Indexer, Cartographer, Detector, and Triager sections so
-                                 far, with every future role appended below as its own
-                                 section — never a separate file
+                                 Indexer, Cartographer, Detector, Triager, and Coverage-Guide
+                                 sections so far, with every future role appended below as
+                                 its own section — never a separate file
 ```
 
 The Indexer's actual indexing (parsing, call graph, persistence, queries) has
@@ -111,20 +123,34 @@ tracker, only `queue_candidate` — so no matter what either agent decides,
 "surface only what survives" holds by construction. The Triager adds no new
 enforcement mechanism of its own — the evidence gate it calls has been built
 and tested since the Substrate section; this section is what finally puts a
-live agent's real (possibly wrong) citations through it. Five real OpenAI
-calls exist in this build so far (Indexer, Cartographer, Detector rule-sweep,
-Detector exploratory, Triager), each a small `create_deep_agent` main agent
-delegating through the `task` tool to prove the tool interface is usable by
-an LLM, not just by pytest.
+live agent's real (possibly wrong) citations through it. Coverage-Guide is
+the same shape again, one level up: every MUST-level requirement (FR-067
+derive checklist, FR-069 check off from evidence, FR-070 directed tasks,
+FR-071 the coverage-complete flag, FR-074 don't rebuild from scratch) is
+mechanical, exercised directly from `CoverageStore` with no LLM involved --
+"coverage measures attempt, not outcome" is an evidence check, the same way
+`BudgetGovernor.should_stop()` is a mechanical conjunction. The payoff:
+`coverage_store.is_complete()` now feeds `gov.should_stop()` directly,
+closing Constitution VI end to end with real inputs on both sides instead
+of the hand-typed booleans the Substrate section's own tests used. Six real
+OpenAI calls exist in this build so far (Indexer, Cartographer, Detector
+rule-sweep, Detector exploratory, Triager, Coverage-Guide), each a small
+`create_deep_agent` main agent delegating through the `task` tool to prove
+the tool interface is usable by an LLM, not just by pytest.
 
-**Deferred by design, not forgotten**: FR-046 (exploratory Detector instances
-consult a coverage log before choosing an area, so parallel agents don't
-converge on the same obvious surfaces) needs the Coverage-Guide role, not
-built yet — irrelevant for a single-agent, single-target toy run anyway,
-since there's no fleet to coordinate. FR-038 (dependency scanning) is
+**Deferred by design, not forgotten**: FR-038 (dependency scanning) is
 skipped for the same reason FR-039 (secret scanning) mostly overlaps with
 CodeGuard's own `hardcoded-credentials` rule: the toy target has no
-third-party dependency manifest to scan.
+third-party dependency manifest to scan. `queue_directed_tasks` (FR-070)
+writes real, claimable tasks to the `WorkQueue`, but nothing in this
+notebook actually consumes them with a live Detector `claim_next()` call —
+that closed loop needs a real multi-agent fleet, which is what the Full
+Pipeline section builds toward. FR-046 (exploratory Detector instances
+consult the coverage log before choosing an area) is half-addressed: the
+`coverage_log` table and `CoverageStore.record_sweep()` now exist, but the
+Detector's exploratory subagent doesn't call it yet — irrelevant for a
+single-agent toy run anyway, since there's no fleet for parallel agents to
+converge within.
 
 **A live-only failure mode worth knowing about**: `create_deep_agent`
 attaches a default filesystem middleware to every agent and subagent
@@ -143,16 +169,16 @@ system prompt also now explicitly tells the model to ignore it.
 ## What's next (roadmap, not yet built)
 
 Everything from here on is a new **section appended to `01_substrate.ipynb`**
-— Setup, Substrate, Indexer, Cartographer, Detector, and Triager are already
-sections one through six of that same file, not separate notebooks. That
-keeps the whole build in one Colab runtime, so a later section never loses
-the environment (installed packages, OpenAI key, in-progress SQLite
-database) an earlier section set up. Each section still starts from the
-already-verified index, security map, and triaged findings above:
+— Setup, Substrate, Indexer, Cartographer, Detector, Triager, and
+Coverage-Guide are already sections one through seven of that same file,
+not separate notebooks. That keeps the whole build in one Colab runtime, so
+a later section never loses the environment (installed packages, OpenAI
+key, in-progress SQLite database) an earlier section set up. Each section
+still starts from the already-verified index, security map, triaged
+findings, and coverage checklist above:
 
 | Section | Adds |
 |---|---|
-| Coverage-Guide | The real budget governor wired into a running fleet |
 | Reporter | Per-finding markdown + rollup, local files |
 | Full pipeline | `create_deep_agent(...)` with all subagents wired together, end to end on the toy target, finding lifecycle inspected from SQLite |
 

@@ -9,9 +9,10 @@ Security Spec](https://github.com/CiscoDevNet/foundry-security-spec) and its
 **Status:** the substrate (finding store, work queue, budget governor), the
 Indexer (deterministic parser, query interface), the Cartographer
 (fallback-guaranteed, LLM-authored security map), the Detector (CodeGuard
-rule-sweep + exploratory hunting), and the Triager (evidence-gated verdicts)
-are built and tested. Coverage-Guide onward is a roadmap, built one notebook
-section at a time. See `docs/ARCHITECTURE.md` for the full picture and
+rule-sweep + exploratory hunting), the Triager (evidence-gated verdicts),
+and Coverage-Guide (a mechanical checklist wired to the budget governor) are
+built and tested. Reporter onward is a roadmap, built one notebook section
+at a time. See `docs/ARCHITECTURE.md` for the full picture and
 `docs/CONSTITUTION_MAPPING.md` for how each constitution principle maps to
 actual code.
 
@@ -25,8 +26,9 @@ actual code.
 | `src/foundry/codeguard/` | `loader.py` (parses the vendored rule corpus, FR-041, no LLM), `tools.py` (`list_rules`/`get_rule`) |
 | `src/foundry/detector/tools.py` | `queue_candidate`/`record_rule_gap` — the Detector's only writes, both internal-only (Constitution II) |
 | `src/foundry/triager/tools.py` | `list_candidates`/`get_candidate`/`assign_verdict` — `assign_verdict` binds the real Indexer resolver as a closure the model can't see or influence |
-| `src/foundry/agents/` | The Indexer, Cartographer, Detector (two SubAgents: rule-sweep + exploratory), and Triager as DeepAgents `SubAgent`s, plus `_middleware.py`'s shared filesystem-tool restriction |
-| `tests/` (7 files) | 71 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles, FR-020/021/022/025/026/031/041/042/054, and FR-036a mechanically, no LLM |
+| `src/foundry/coverage/` | `store.py` (`CoverageStore`: the whole FR-067/069/070/071/074 mechanism, no LLM), `tools.py` (one read-only tool, `get_coverage_report`) |
+| `src/foundry/agents/` | The Indexer, Cartographer, Detector (two SubAgents: rule-sweep + exploratory), Triager, and Coverage-Guide as DeepAgents `SubAgent`s, plus `_middleware.py`'s shared filesystem-tool restriction |
+| `tests/` (8 files) | 89 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles, FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074, and FR-036a mechanically, no LLM |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared target every section parses/queries |
 | `notebooks/01_substrate.ipynb` | The single, growing Colab notebook — setup, substrate, and every role's section get appended here as they're built |
@@ -64,10 +66,15 @@ security-map digest) — queuing candidate findings into SQLite. Section 6
 candidate and assigning verdicts through the same evidence gate the
 Substrate section proved standalone — a citation naming a symbol that
 doesn't actually exist gets auto-demoted from `true-positive` to
-`needs-review`, live. Each real call costs a small real amount on
-`gpt-5.6-luna`. Every later role (Coverage-Guide, ...) gets appended as a
-new section in this same notebook, not a separate file — so nothing later
-ever loses the environment setup established.
+`needs-review`, live. Section 7 (Coverage-Guide) builds and checks a
+coverage checklist mechanically (no OpenAI call needed for any of it),
+wires the result directly into the Substrate section's `BudgetGovernor` —
+closing Constitution VI end to end with real inputs instead of hand-typed
+booleans — then makes one real OpenAI call for a short remaining-work
+narrative. Each real call costs a small real amount on `gpt-5.6-luna`.
+Every later role (Reporter, ...) gets appended as a new section in this
+same notebook, not a separate file — so nothing later ever loses the
+environment setup established.
 
 ## Attribution
 
