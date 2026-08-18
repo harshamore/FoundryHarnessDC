@@ -25,6 +25,15 @@ class Rule:
     content: str
 
 
+# CodeGuard's own `languages` frontmatter vocabulary doesn't distinguish
+# TSX from TypeScript (no rule tags "tsx"), but
+# `foundry.indexer.parser.detect_language` does, since TSX needs its own
+# tree-sitter grammar -- this reconciles the two vocabularies at the one
+# point they meet, rather than making every caller of `load_rules` know
+# about the mismatch.
+_LANGUAGE_ALIASES_FOR_RULE_MATCHING: dict[str, str] = {"tsx": "typescript"}
+
+
 def _split_frontmatter(text: str) -> tuple[dict | None, str]:
     if not text.startswith("---\n"):
         return None, text
@@ -54,13 +63,26 @@ def _parse_rule_file(path: Path, category: str) -> Rule | None:
     )
 
 
-def load_rules(rules_dir: Path, categories: tuple[str, ...] = ("core",)) -> list[Rule]:
+def load_rules(
+    rules_dir: Path,
+    categories: tuple[str, ...] = ("core",),
+    languages: tuple[str, ...] | None = None,
+) -> list[Rule]:
     """Load every rule from the given category subdirectories of `rules_dir`.
 
     Defaults to `core` only (23 rules at the pinned commit) -- matches the
     upstream `codeguard-mcp` server's own default; `owasp` (the larger
     ~85-rule superset) is available to opt into once the pipeline is
     proven, per docs/CODEGUARD_INTEGRATION.md.
+
+    `languages`, if given, filters to rules relevant to the target's
+    detected language(s) (Phase 1 -- multi-language support):
+    a rule with an empty `languages` frontmatter field applies regardless
+    (e.g. `codeguard-1-hardcoded-credentials` -- a concept that isn't
+    language-specific), everything else keeps only rules whose own
+    `languages` list intersects the ones given. `languages=None` (the
+    default) means no filtering at all, same as before this parameter
+    existed -- every existing caller is unaffected.
     """
     rules: list[Rule] = []
     for category in categories:
@@ -73,4 +95,7 @@ def load_rules(rules_dir: Path, categories: tuple[str, ...] = ("core",)) -> list
             rule = _parse_rule_file(md_path, category)
             if rule:
                 rules.append(rule)
+    if languages is not None:
+        wanted = {_LANGUAGE_ALIASES_FOR_RULE_MATCHING.get(lang.lower(), lang.lower()) for lang in languages}
+        rules = [r for r in rules if not r.languages or wanted & {lang.lower() for lang in r.languages}]
     return rules

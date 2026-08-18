@@ -65,6 +65,57 @@ def test_missing_category_directory_returns_empty_not_error(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase 1: language-filtered rule-sweep
+# ---------------------------------------------------------------------------
+
+
+def test_languages_none_means_no_filtering_same_as_before():
+    unfiltered = load_rules(RULES_DIR, categories=("core",))
+    explicit_none = load_rules(RULES_DIR, categories=("core",), languages=None)
+    assert unfiltered == explicit_none
+
+
+def test_language_agnostic_rules_always_included():
+    """A rule with an empty `languages` field (e.g. hardcoded-credentials --
+    not a language-specific concept) applies no matter which language is
+    asked for."""
+    rules = load_rules(RULES_DIR, categories=("core",), languages=("go",))
+    ids = {r.rule_id for r in rules}
+    assert "codeguard-1-hardcoded-credentials" in ids  # empty languages field
+
+
+def test_language_filter_excludes_rules_not_tagged_for_that_language():
+    all_rules = load_rules(RULES_DIR, categories=("core",))
+    go_rules = load_rules(RULES_DIR, categories=("core",), languages=("go",))
+    assert len(go_rules) < len(all_rules)  # a real subset, not a no-op
+    for rule in go_rules:
+        assert not rule.languages or "go" in rule.languages
+
+
+def test_language_filter_is_case_insensitive():
+    upper = load_rules(RULES_DIR, categories=("core",), languages=("Go",))
+    lower = load_rules(RULES_DIR, categories=("core",), languages=("go",))
+    assert {r.rule_id for r in upper} == {r.rule_id for r in lower}
+
+
+def test_tsx_is_matched_against_typescript_tagged_rules():
+    """CodeGuard's own `languages` vocabulary doesn't have a separate "tsx"
+    tag (only "typescript") -- the loader must reconcile this, not require
+    every caller to know about the mismatch."""
+    typescript_rules = load_rules(RULES_DIR, categories=("core",), languages=("typescript",))
+    tsx_rules = load_rules(RULES_DIR, categories=("core",), languages=("tsx",))
+    assert {r.rule_id for r in typescript_rules} == {r.rule_id for r in tsx_rules}
+    assert len(tsx_rules) > 0
+
+
+def test_multiple_languages_are_unioned():
+    go_only = load_rules(RULES_DIR, categories=("core",), languages=("go",))
+    python_only = load_rules(RULES_DIR, categories=("core",), languages=("python",))
+    combined = load_rules(RULES_DIR, categories=("core",), languages=("go", "python"))
+    assert {r.rule_id for r in combined} == {r.rule_id for r in go_only} | {r.rule_id for r in python_only}
+
+
+# ---------------------------------------------------------------------------
 # Tool wrapping (structural check, no LLM invoked)
 # ---------------------------------------------------------------------------
 
