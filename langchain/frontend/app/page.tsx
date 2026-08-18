@@ -17,6 +17,7 @@ export default function Home() {
   const [events, setEvents] = useState<AssessmentEvent[]>([]);
   const [result, setResult] = useState<AssessmentResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [galileoRequested, setGalileoRequested] = useState(false);
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
   const reset = useCallback(() => {
@@ -28,11 +29,13 @@ export default function Home() {
     setEvents([]);
     setResult(null);
     setError(null);
+    setGalileoRequested(false);
   }, []);
 
   async function handleSubmit(values: ConfigFormValues) {
     setPhase("starting");
     setError(null);
+    setGalileoRequested(Boolean(values.galileoApiKey));
     try {
       const response = await createAssessment({
         openaiApiKey: values.openaiApiKey,
@@ -96,6 +99,7 @@ export default function Home() {
           targetSummary={targetSummary}
           result={result}
           reportUrl={reportUrl(assessmentId)}
+          galileoRequested={galileoRequested}
           onReset={reset}
         />
       )}

@@ -32,6 +32,7 @@ export interface AssessmentResult {
   security_map_digest: string;
   detection_results: WorkerResult[];
   rollup: string;
+  galileo_console_url: string | null;
 }
 
 export interface CreateAssessmentResponse {

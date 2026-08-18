@@ -25,6 +25,13 @@ already established. `pytest tests/` and the local quickstart keep needing
 zero of this installed; `tests/test_api_app.py` skips cleanly (not fails)
 without it.
 
+**Want Galileo tracing too?** Install `pip install -e ".[dev,api,observability]"`
+instead -- without the `observability` extra, submitting a Galileo API
+key through the frontend still runs the assessment normally, but tracing
+silently never activates (`build_galileo_callback` catches the
+`ImportError` and prints a message to the backend's own terminal, not to
+the API response or frontend -- see the Galileo section below).
+
 ## Routes
 
 | Route | Method | Purpose |
@@ -83,6 +90,19 @@ Fine for this phase's single-user, one-assessment-at-a-time practical
 scope; a real limitation the moment this ever serves truly concurrent
 assessments with different Galileo accounts. Flagged here deliberately,
 not discovered later.
+
+**Confirming tracing actually activated.** `AssessmentResult.
+galileo_console_url` (part of the `result` object in `GET .../status`
+once complete) is a direct link to the run's project/log stream in the
+Galileo console, or `null` if tracing wasn't configured or failed to
+initialize -- `build_galileo_callback`'s own "fails soft" contract means
+a bad key, an unreachable console, or the `galileo` package not being
+installed all degrade to "no tracing" silently (a message goes to the
+backend's own terminal via `print()`, not to any API response), so this
+field is the only way a caller can actually confirm tracing worked
+rather than assuming from silence either way. The frontend surfaces it
+as a "View Galileo trace" link on the results view, or a warning if a
+Galileo key was submitted but this field comes back `null`.
 
 ## What `/report` serves (Phase 5)
 

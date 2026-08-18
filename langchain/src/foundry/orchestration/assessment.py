@@ -43,6 +43,7 @@ from foundry.orchestration.detection import (
 )
 from foundry.orchestration.events import AssessmentEvent
 from foundry.orchestration.loop_control import evaluate_cycle, has_directed_work_available
+from foundry.observability.galileo import console_url
 from foundry.reporter.store import ReporterStore
 from foundry.substrate.budget import BudgetCaps, BudgetGovernor
 from foundry.substrate.db import connect
@@ -81,6 +82,7 @@ class AssessmentResult:
     security_map_digest: str
     detection_results: list[WorkerResult]
     rollup: str
+    galileo_console_url: str | None = None
 
 
 async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
@@ -254,6 +256,11 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
             security_map_digest=security_map_digest,
             detection_results=detection_results,
             rollup=rollup,
+            # None whenever tracing isn't configured or failed to
+            # initialize (see build_galileo_callback's own "fails soft"
+            # contract) -- the frontend uses this to actually confirm
+            # whether tracing activated, instead of silence either way.
+            galileo_console_url=console_url(config.galileo_callback),
         )
     finally:
         conn.close()

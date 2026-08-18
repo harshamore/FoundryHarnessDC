@@ -99,7 +99,12 @@ response = harness_agent.invoke(
 stream (`https://app.galileo.ai/project/{project_id}/log-streams/{log_stream_id}`)
 from the underlying `GalileoLogger`'s own `project_id`/`log_stream_id` — not
 fabricated, read from the same object the SDK itself populates during
-construction.
+construction. `run_assessment` (Phase 2) calls this once, at the end of a
+run, and stores it on `AssessmentResult.galileo_console_url` — `None`
+whenever tracing wasn't configured or failed to initialize. This is what
+lets the Phase 3 API/Phase 4 frontend actually confirm tracing worked
+instead of the caller having to trust silence either way (see
+`docs/API.md`'s own note on this).
 
 ## What's unverified — and was flagged before, not discovered after
 

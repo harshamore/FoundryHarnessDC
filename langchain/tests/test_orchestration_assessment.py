@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -210,6 +211,69 @@ async def test_run_assessment_closes_the_checklist_via_the_directed_loop(tmp_pat
     ciso_report = ciso_report_path.read_text()
     assert "# CISO Security Assessment Report" in ciso_report
     assert "## Executive Summary" in ciso_report
+
+
+class _FakeGalileoLogger:
+    project_id = "proj-123"
+    log_stream_id = "stream-456"
+
+
+class _FakeGalileoCallback(BaseCallbackHandler):
+    """A real (no-op) LangChain callback handler -- `agent.ainvoke`'s own
+    callback manager expects real handler attributes (`run_inline`, etc.),
+    not just anything with a `galileo_logger` -- so a bare object isn't
+    enough here the way it is in test_observability.py's unit-level
+    console_url() tests."""
+
+    galileo_logger = _FakeGalileoLogger()
+
+
+async def test_run_assessment_surfaces_the_galileo_console_url_when_tracing_is_configured(tmp_path, target):
+    """API/UI diagnostic: previously nothing surfaced whether Galileo
+    tracing actually activated for a run -- a user who configured it had
+    no way to confirm besides trusting silence, indistinguishable from it
+    silently failing (see build_galileo_callback's own fails-soft
+    contract). AssessmentResult.galileo_console_url closes that gap."""
+    normalized_path = target.files[0].normalized_path
+    config = AssessmentConfig(
+        target=target,
+        db_path=tmp_path / "assessment_galileo.sqlite3",
+        reports_dir=tmp_path / "reports_galileo",
+        operator_goals=["sql-injection"],
+        rules_dir=REPO_ROOT / "data" / "codeguard" / "rules",
+        model=CombinedDetectorFakeModel(normalized_path=normalized_path),
+        max_directed_workers=1,
+        max_concurrent=1,
+        max_cycles=1,
+        budget_caps=BudgetCaps(yield_threshold=0.0),
+        run_cartographer_agent=False,
+        run_triager_agent=False,
+        run_reporter_agent=False,
+        galileo_callback=_FakeGalileoCallback(),
+    )
+    result = await run_assessment(config)
+    assert result.galileo_console_url == "https://app.galileo.ai/project/proj-123/log-streams/stream-456"
+
+
+async def test_run_assessment_leaves_galileo_console_url_none_when_tracing_not_configured(tmp_path, target):
+    normalized_path = target.files[0].normalized_path
+    config = AssessmentConfig(
+        target=target,
+        db_path=tmp_path / "assessment_no_galileo.sqlite3",
+        reports_dir=tmp_path / "reports_no_galileo",
+        operator_goals=["sql-injection"],
+        rules_dir=REPO_ROOT / "data" / "codeguard" / "rules",
+        model=CombinedDetectorFakeModel(normalized_path=normalized_path),
+        max_directed_workers=1,
+        max_concurrent=1,
+        max_cycles=1,
+        budget_caps=BudgetCaps(yield_threshold=0.0),
+        run_cartographer_agent=False,
+        run_triager_agent=False,
+        run_reporter_agent=False,
+    )
+    result = await run_assessment(config)
+    assert result.galileo_console_url is None
 
 
 async def test_run_assessment_stops_via_no_progress_guard_when_directed_work_never_completes(tmp_path, target):

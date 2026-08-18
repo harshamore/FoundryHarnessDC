@@ -6,11 +6,13 @@ export default function ResultsSummary({
   targetSummary,
   result,
   reportUrl,
+  galileoRequested,
   onReset,
 }: {
   targetSummary: string;
   result: AssessmentResult;
   reportUrl: string;
+  galileoRequested: boolean;
   onReset: () => void;
 }) {
   return (
@@ -45,6 +47,27 @@ export default function ResultsSummary({
           {result.rollup}
         </pre>
       </div>
+
+      {result.galileo_console_url && (
+        <p className="text-sm">
+          <a
+            href={result.galileo_console_url}
+            target="_blank"
+            rel="noreferrer"
+            className="underline underline-offset-2"
+          >
+            View Galileo trace &rarr;
+          </a>
+        </p>
+      )}
+      {!result.galileo_console_url && galileoRequested && (
+        <p role="alert" className="text-sm text-amber-600 dark:text-amber-400">
+          Galileo tracing was requested but did not activate for this run. Check the backend
+          terminal for a message starting with &quot;Galileo tracing unavailable&quot; or
+          &quot;GALILEO_API_KEY is set but the galileo package isn&apos;t installed&quot; —
+          the latter means the backend needs <code>pip install -e &quot;.[observability]&quot;</code>.
+        </p>
+      )}
 
       <div className="flex gap-3">
         <a
