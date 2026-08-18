@@ -1,13 +1,14 @@
-"""The Detector role (spec.md §5.4) as two DeepAgents SubAgents: rule-sweep
-(FR-037, systematic) and exploratory hunting (FR-040, free-form) -- "the
-two halves of a flywheel" per the spec, sharing the same finding-store
-tools (spec.md §5.4: "the two modes are not alternatives; they are the two
-halves of a flywheel that, once turning, improves both detection and
-prevention indefinitely").
+"""The Detector role (spec.md §5.4) as three DeepAgents SubAgents: rule-sweep
+(FR-037, systematic), exploratory hunting (FR-040, free-form) -- "the two
+halves of a flywheel" per the spec (spec.md §5.4: "the two modes are not
+alternatives; they are the two halves of a flywheel that, once turning,
+improves both detection and prevention indefinitely") -- and directed
+detection (FR-070), which closes Coverage-Guide's directed-task loop by
+consuming the gaps the other two halves left uncovered.
 
-Both write only through `queue_candidate` (Constitution II: "Surface Only
-What Survives" -- detection is high-volume, low-precision by design, and
-none of it reaches a human until the Triager, not built yet, promotes it).
+All three write only through `queue_candidate` (Constitution II: "Surface
+Only What Survives" -- detection is high-volume, low-precision by design,
+and none of it reaches a human until the Triager promotes it).
 """
 from __future__ import annotations
 
@@ -17,10 +18,12 @@ from foundry.agents._middleware import (
 )
 from foundry.codeguard.loader import Rule
 from foundry.codeguard.tools import build_codeguard_tools
-from foundry.detector.tools import build_detector_tools
+from foundry.coverage.store import CoverageStore
+from foundry.detector.tools import build_detector_tools, build_directed_task_tools
 from foundry.indexer.store import IndexStore
 from foundry.indexer.tools import build_index_tools
 from foundry.substrate.finding_store import FindingStore
+from foundry.substrate.work_queue import WorkQueue
 
 RULE_SWEEP_SYSTEM_PROMPT = f"""\
 You are the Detector role's rule-sweep half in a security-evaluation \
@@ -94,5 +97,52 @@ enough to fit directly and every claim in it should already be grounded):
         ),
         "system_prompt": system_prompt,
         "tools": [*build_index_tools(index), *build_detector_tools(finding_store)],
+        "middleware": [minimal_filesystem_middleware()],
+    }
+
+
+DIRECTED_SYSTEM_PROMPT = f"""\
+You are the Detector role's directed half in a security-evaluation harness \
+(spec.md FR-070). Unlike the rule-sweep and exploratory halves, you don't \
+choose what to look at -- Coverage-Guide has already identified specific \
+(area, goal) gaps in what's been checked so far and queued a task for each \
+one. Your job is to close them.
+
+Call claim_directed_task to get one task -- it tells you the area, goal, \
+and a specific instruction. Investigate using get_function_body/ \
+get_callers/get_callees/find_symbol/full_text_search, exactly like the \
+other Detector halves, grounding everything in code you actually read. If \
+you find something, call queue_candidate for it (technique="directed:" \
+followed by the goal, e.g. "directed:sql-injection"). Whether or not you \
+found anything, call complete_directed_task with the task's id and a short \
+note on what you actually checked when you're done investigating it -- \
+this is the permanent record that the gap was actually checked, separate \
+from whether anything was found there, and it's what closes the coverage \
+checklist item, not queue_candidate.
+
+Then call claim_directed_task again for the next one. Keep going until it \
+tells you no directed tasks are available -- that's how you know to stop.
+
+{NO_FILESYSTEM_EXPLORATION_WARNING}\
+"""
+
+
+def build_detector_directed_subagent(
+    finding_store: FindingStore, index: IndexStore, work_queue: WorkQueue, coverage_store: CoverageStore
+) -> dict:
+    return {
+        "name": "detector-directed",
+        "description": (
+            "Consumes Coverage-Guide's directed-detection tasks one at a "
+            "time -- investigating each named (area, goal) gap, queuing a "
+            "candidate finding for anything found, and recording a "
+            "coverage sweep either way -- until none remain."
+        ),
+        "system_prompt": DIRECTED_SYSTEM_PROMPT,
+        "tools": [
+            *build_index_tools(index),
+            *build_detector_tools(finding_store),
+            *build_directed_task_tools(work_queue, coverage_store),
+        ],
         "middleware": [minimal_filesystem_middleware()],
     }

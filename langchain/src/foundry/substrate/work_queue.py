@@ -37,8 +37,23 @@ class WorkQueue:
             )
             return cur.lastrowid
 
-    def claim_next(self, worker_id: str, task_type: str | None = None) -> Task | None:
+    def claim_next(
+        self,
+        worker_id: str,
+        task_type: str | None = None,
+        task_type_prefix: str | None = None,
+    ) -> Task | None:
         """Atomically claim one pending-or-lease-expired task.
+
+        `task_type` matches exactly; `task_type_prefix` matches any task
+        type starting with the given string (e.g. Coverage-Guide's
+        directed-detection tasks are each queued with a distinct
+        `task_type` encoding their specific area and goal --
+        `"directed_detection:{area}:{goal}"` -- so a consumer that wants
+        "any directed-detection task, whichever" claims by prefix
+        `"directed_detection:"` rather than knowing the exact type up
+        front). Passing both is not supported; `task_type` wins if both are
+        given, since exact match is the more common and more precise case.
 
         Locked per-connection (see `foundry.substrate.db.lock_for`): two
         separate WorkQueue instances on two separate connections (the
@@ -64,6 +79,17 @@ class WorkQueue:
                          ORDER BY id LIMIT 1
                         """,
                         (task_type,),
+                    ).fetchone()
+                elif task_type_prefix:
+                    row = self._conn.execute(
+                        """
+                        SELECT id, task_type, payload FROM work_queue
+                         WHERE (status = 'pending'
+                                OR (status = 'claimed' AND leased_until < datetime('now')))
+                           AND task_type LIKE ? ESCAPE '\\'
+                         ORDER BY id LIMIT 1
+                        """,
+                        (task_type_prefix.replace("%", "\\%").replace("_", "\\_") + "%",),
                     ).fetchone()
                 else:
                     row = self._conn.execute(

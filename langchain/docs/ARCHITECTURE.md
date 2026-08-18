@@ -34,10 +34,11 @@ Reporter.
 
 ## What's actually implemented right now
 
-All eight core roles from spec.md §4.2 (Orchestrator's lifecycle role is
-this notebook's own `create_deep_agent` calls, one per section — no
-dedicated Orchestrator subagent was built; Validator runs degraded, no
-testbed):
+All eight core roles from spec.md §4.2, now wired into one running pipeline
+(Orchestrator's lifecycle role is this notebook's own `create_deep_agent`
+calls — the Full Pipeline section wires all eight subagents into a single
+call rather than one per role, but no dedicated Orchestrator subagent
+exists; Validator runs degraded, no testbed):
 
 ```
 src/foundry/
@@ -48,9 +49,10 @@ src/foundry/
                                 (now rejects a bare verdict with no report, FR-054);
                                 also record_rule_gap/list_rule_gaps (FR-042), list_untriaged,
                                 list_by_verdict
-    work_queue.py               Atomic claim/lease/heartbeat/release — now consumed for real
-                                 by Coverage-Guide's directed tasks (FR-070), not just its own
-                                 concurrency tests
+    work_queue.py               Atomic claim/lease/heartbeat/release — claim_next() now also
+                                 supports prefix claiming (task_type_prefix), and directed
+                                 tasks (FR-070) are actually consumed by a live Detector, not
+                                 just queued
     budget.py                    Coverage-before-yield stop condition — now fed a real
                                   coverage-complete flag, not a hand-typed boolean
   indexer/
@@ -67,7 +69,11 @@ src/foundry/
     loader.py                       Parses the vendored rule corpus (FR-041) — no model call
     tools.py                         LangChain tool wrappers: list_rules, get_rule
   detector/
-    tools.py                        LangChain tool wrappers: queue_candidate, record_rule_gap
+    tools.py                        LangChain tool wrappers: queue_candidate, record_rule_gap,
+                                     and build_directed_task_tools (claim_directed_task,
+                                     complete_directed_task — the latter always records a
+                                     CoverageStore sweep, closing the checklist item
+                                     regardless of whether a candidate was found)
   triager/
     tools.py                        LangChain tool wrappers: list_candidates, get_candidate,
                                      assign_verdict (binds the real resolver as a closure)
@@ -89,8 +95,9 @@ src/foundry/
                                     down to the one tool the framework requires
     indexer.py                     The Indexer as a DeepAgents SubAgent dict
     cartographer.py                  The Cartographer as a DeepAgents SubAgent dict
-    detector.py                       Two SubAgent dicts: rule-sweep (FR-037) and
-                                       exploratory (FR-040)
+    detector.py                       Three SubAgent dicts: rule-sweep (FR-037), exploratory
+                                       (FR-040), and directed (FR-070 — consumes Coverage-
+                                       Guide's queued gaps)
     triager.py                         The Triager as a DeepAgents SubAgent dict
     coverage_guide.py                   The Coverage-Guide as a DeepAgents SubAgent dict
                                          (FR-073 only — the narrative, not the mechanism)
@@ -102,15 +109,17 @@ data/
                                   published finding + rollup.md (git-ignored, regenerated per run)
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
-tests/
-  test_finding_store.py        13 tests proving Constitution I/III/IV/VI/VIII mechanically
+tests/ (9 files, 122 tests total)
+  test_finding_store.py        16 tests proving Constitution I/III/IV/VI/VIII mechanically,
+                                including task_type_prefix claiming (used by directed detection)
   test_indexer.py               17 tests proving FR-020/021/022/025/026, the real resolver,
                                  the filesystem-tool restriction, and decorator capture, no LLM
   test_cartographer.py           12 tests proving FR-036a's fallback guarantee, the digest, and
                                   the filesystem-tool restriction, no LLM
   test_codeguard.py               9 tests proving the rule corpus loads and parses correctly, no LLM
-  test_detector.py                 8 tests proving the tool wrappers, both SubAgent shapes, and
-                                    the front-loaded security-map digest, no LLM
+  test_detector.py                 15 tests proving the tool wrappers, all three SubAgent shapes,
+                                    the front-loaded security-map digest, and the directed-task
+                                    loop actually closing a coverage-checklist item end to end, no LLM
   test_triager.py                  12 tests proving FR-054, the evidence-gate demotion through
                                     the tool layer (not just FindingStore directly), and the
                                     SubAgent shape, no LLM
@@ -122,8 +131,9 @@ tests/
 notebooks/
   01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate,
                                  Indexer, Cartographer, Detector, Triager, Coverage-Guide,
-                                 and Reporter sections — all eight core roles, in one file,
-                                 never a separate notebook per role
+                                 Reporter, and Full Pipeline sections — all eight core roles
+                                 plus their combined wiring, in one file, never a separate
+                                 notebook per role
 ```
 
 The Indexer's actual indexing (parsing, call graph, persistence, queries) has
@@ -164,25 +174,50 @@ are resolved for this build as CWE and a four-tier qualitative scale
 (critical/high/medium/low) -- a judgment call, documented here rather than
 silently made. FR-081's rollup (counts, component grouping, coverage
 status) is entirely deterministic aggregation, no LLM needed to compute
-any of it. Seven real OpenAI calls exist in this build now (Indexer,
+any of it. Nine real OpenAI calls exist in this build now (Indexer,
 Cartographer, Detector rule-sweep, Detector exploratory, Triager,
-Coverage-Guide, Reporter), each a small `create_deep_agent` main agent
-delegating through the `task` tool to prove the tool interface is usable
-by an LLM, not just by pytest.
+Coverage-Guide, Reporter, Detector directed, and the Full Pipeline's
+all-eight-subagents call), each a `create_deep_agent` main agent delegating
+through the `task` tool to prove the tool interface is usable by an LLM,
+not just by pytest.
+
+**The directed-detection loop, closed (FR-070) — the Full Pipeline
+section.** `queue_directed_tasks` writes real, claimable tasks to the
+`WorkQueue`; until this section nothing consumed them. Closing this
+surfaced a real gap, not just a missing consumer: `CoverageStore.
+review_cycle()` closes a checklist item on *evidence* (a `findings` row or
+a `coverage_log` sweep matching that exact area/goal), not on work-queue
+status — so a directed pass that checks an area and finds nothing would
+have drained its task with no effect on coverage at all. Fixed at the tool
+layer: `build_directed_task_tools`'s `complete_directed_task`
+(`src/foundry/detector/tools.py`) now always calls `CoverageStore.
+record_sweep()` using the *claimed task's own* area/goal, tracked
+server-side rather than re-supplied by the model, regardless of whether
+`queue_candidate` was also called — the same "tool decides what counts as
+evidence, model just supplies what it found" shape as the Triager's real
+resolver. `WorkQueue.claim_next()` gained a `task_type_prefix` parameter
+(`tests/test_finding_store.py`) so a directed Detector can claim "any
+directed-detection task" without knowing the exact area/goal-encoded
+`task_type` up front. Proven live in the notebook and in
+`tests/test_detector.py::test_complete_directed_task_closes_the_matching_coverage_checklist_item`.
+
+**One agent, every role — also the Full Pipeline section.** All eight
+subagents (indexer, cartographer, detector ×3, triager, coverage-guide,
+reporter) now register on a single `create_deep_agent(...)` call instead
+of one call per role, the actual shape an Orchestrator wires up. This adds
+no new enforcement mechanism — Constitution II still holds per-subagent's
+own `tools` list regardless of how many subagents share one main agent —
+but it is the first point in this build where the main agent has more than
+one subagent to choose between on a real request.
 
 **Deferred by design, not forgotten**: FR-038 (dependency scanning) is
 skipped for the same reason FR-039 (secret scanning) mostly overlaps with
 CodeGuard's own `hardcoded-credentials` rule: the toy target has no
-third-party dependency manifest to scan. `queue_directed_tasks` (FR-070)
-writes real, claimable tasks to the `WorkQueue`, but nothing in this
-notebook actually consumes them with a live Detector `claim_next()` call —
-this was raised explicitly with the user, who asked to finish Reporter
-first and then come back to it; it's the first thing to revisit, likely
-alongside or just before the Full Pipeline section. FR-046 (exploratory
-Detector instances consult the coverage log before choosing an area) is
-half-addressed the same way: the `coverage_log` table and
-`CoverageStore.record_sweep()` exist, but the Detector's exploratory
-subagent doesn't call it yet. FR-084 (every code location a permalink that
+third-party dependency manifest to scan. FR-046 (exploratory Detector
+instances consult the coverage log before choosing an area) is
+half-addressed: the `coverage_log` table and `CoverageStore.record_sweep()`
+exist and are now exercised by the directed half, but the exploratory
+subagent doesn't call it. FR-084 (every code location a permalink that
 resolves for the reader) isn't attempted -- reports cite `path:line-range`
 directly instead, since there's no commit-pinned VCS host story for a toy
 target parsed straight off disk; the spec itself leaves this one's
@@ -204,17 +239,26 @@ system prompt also now explicitly tells the model to ignore it.
 
 ## What's next (roadmap, not yet built)
 
-All eight core roles are built. Everything from here on is still a new
-**section appended to `01_substrate.ipynb`**, not a separate notebook:
+All eight core roles are built, and both pieces that were previously
+deferred — the directed-detection loop closure and the all-subagents
+pipeline — are done. What's left is deliberately out of scope for this
+build, not oversight:
 
-| Section | Adds |
-|---|---|
-| Coverage-Guide loop closure | A live Detector actually consuming `WorkQueue` directed-detection tasks via `claim_next()`, instead of `queue_directed_tasks` writing to a queue nothing reads |
-| Full pipeline | `create_deep_agent(...)` with all subagents wired together, end to end on the toy target, finding lifecycle inspected from SQLite |
+- A dedicated Orchestrator subagent with `interrupt_on`-gated tools
+  (`mark_coverage_complete`, `override_verdict`) for Constitution X ("the
+  operator outranks every agent") — this notebook's sequence of
+  `create_deep_agent` calls stands in for orchestration, but no tool
+  anywhere requires explicit operator approval before executing.
+- A real testbed, which would take the Validator out of degraded mode
+  (Constitution VII) and give Constitution IX (sandbox by infrastructure)
+  something real to attach to.
+- Genuinely concurrent subagent instances (multiple Detector or Triager
+  workers running at once against a real, larger target), which is what
+  would actually exercise Constitution V beyond what a single top-level
+  call with occasional parallel tool dispatch already covers.
 
-Constitution IX (sandbox by infrastructure) and the parts of III/V that only
-matter under a real multi-process fleet are explicitly deferred past the
-Colab phase — see `docs/CONSTITUTION_MAPPING.md`.
+See `docs/CONSTITUTION_MAPPING.md` for the full principle-by-principle
+status.
 
 ## Quickstart
 

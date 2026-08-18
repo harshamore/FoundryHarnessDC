@@ -232,6 +232,47 @@ def test_concurrent_queue_candidate_on_shared_connection_does_not_collide(db_pat
 
 
 # ---------------------------------------------------------------------------
+# task_type_prefix claiming -- lets a consumer claim "any task of this
+# family" (e.g. Coverage-Guide's directed-detection tasks, each queued with
+# a distinct task_type encoding its own area/goal) without knowing the
+# exact type up front.
+# ---------------------------------------------------------------------------
+
+
+def test_claim_next_by_prefix_matches_any_task_with_that_prefix(db_path):
+    conn = _conn(db_path)
+    queue = WorkQueue(conn)
+    id1 = queue.enqueue("directed_detection:auth:injection", {"area": "auth"})
+    id2 = queue.enqueue("directed_detection:files:traversal", {"area": "files"})
+    queue.enqueue("other_task_type", {})
+
+    first = queue.claim_next("worker", task_type_prefix="directed_detection:")
+    second = queue.claim_next("worker", task_type_prefix="directed_detection:")
+    third = queue.claim_next("worker", task_type_prefix="directed_detection:")
+
+    assert {first.id, second.id} == {id1, id2}  # both directed tasks claimed, in some order
+    assert third is None  # the non-matching task_type is never claimed by prefix
+
+
+def test_claim_next_by_prefix_does_not_match_unrelated_task_type(db_path):
+    conn = _conn(db_path)
+    queue = WorkQueue(conn)
+    queue.enqueue("other_task_type", {})
+
+    assert queue.claim_next("worker", task_type_prefix="directed_detection:") is None
+
+
+def test_claim_next_exact_type_wins_when_both_type_and_prefix_given(db_path):
+    conn = _conn(db_path)
+    queue = WorkQueue(conn)
+    exact_id = queue.enqueue("probe", {})
+    queue.enqueue("probe_extra", {})  # would also match prefix="probe"
+
+    claimed = queue.claim_next("worker", task_type="probe", task_type_prefix="probe")
+    assert claimed.id == exact_id
+
+
+# ---------------------------------------------------------------------------
 # Constitution III: liveness by heartbeat, never by clock
 # ---------------------------------------------------------------------------
 

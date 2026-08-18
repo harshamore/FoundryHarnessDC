@@ -11,15 +11,18 @@ from pathlib import Path
 import pytest
 
 from foundry.agents.detector import (
+    build_detector_directed_subagent,
     build_detector_exploratory_subagent,
     build_detector_rule_sweep_subagent,
 )
 from foundry.codeguard.loader import load_rules
-from foundry.detector.tools import build_detector_tools
+from foundry.coverage.store import CoverageStore
+from foundry.detector.tools import build_detector_tools, build_directed_task_tools
 from foundry.indexer.parser import index_file
 from foundry.indexer.store import IndexStore
 from foundry.substrate.db import connect
 from foundry.substrate.finding_store import FindingStore
+from foundry.substrate.work_queue import WorkQueue
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TARGET = REPO_ROOT / "data" / "toy_target" / "vulnerable_app.py"
@@ -39,6 +42,16 @@ def index(tmp_path) -> IndexStore:
 @pytest.fixture
 def findings(index: IndexStore) -> FindingStore:
     return FindingStore(index.conn)
+
+
+@pytest.fixture
+def work_queue(index: IndexStore) -> WorkQueue:
+    return WorkQueue(index.conn)
+
+
+@pytest.fixture
+def coverage_store(index: IndexStore) -> CoverageStore:
+    return CoverageStore(index.conn)
 
 
 # ---------------------------------------------------------------------------
@@ -140,3 +153,99 @@ def test_exploratory_subagent_front_loads_security_map_digest(findings, index):
     digest = "## Attack Surface\nunauthenticated GET /users"
     subagent = build_detector_exploratory_subagent(findings, index, security_map_digest=digest)
     assert digest in subagent["system_prompt"]
+
+
+# ---------------------------------------------------------------------------
+# FR-070: directed detection -- closing Coverage-Guide's loop (a live
+# Detector actually consuming WorkQueue gaps, not the queue sitting unread,
+# and actually closing coverage-checklist items, not just draining tasks)
+# ---------------------------------------------------------------------------
+
+
+def test_directed_task_tools_shape(work_queue, coverage_store):
+    tools = build_directed_task_tools(work_queue, coverage_store)
+    names = {t.name for t in tools}
+    assert names == {"claim_directed_task", "complete_directed_task"}
+
+
+def test_claim_directed_task_reports_none_available_when_queue_empty(work_queue, coverage_store):
+    tools = build_directed_task_tools(work_queue, coverage_store)
+    claim_tool = next(t for t in tools if t.name == "claim_directed_task")
+    assert "no directed tasks" in claim_tool.invoke({}).lower()
+
+
+def test_claim_directed_task_only_claims_directed_detection_prefix(work_queue, coverage_store):
+    work_queue.enqueue(
+        "directed_detection:auth:injection",
+        {"area": "auth", "goal": "injection", "instruction": "check auth routes"},
+    )
+    work_queue.enqueue("index_function", {"i": 0})  # unrelated task_type, must not be claimed
+
+    tools = build_directed_task_tools(work_queue, coverage_store)
+    claim_tool = next(t for t in tools if t.name == "claim_directed_task")
+
+    first = claim_tool.invoke({})
+    assert "task_id=1 area=auth goal=injection" in first
+    assert "check auth routes" in first
+
+    second = claim_tool.invoke({})
+    assert "no directed tasks" in second.lower()
+
+
+def test_complete_directed_task_round_trip(work_queue, coverage_store):
+    task_id = work_queue.enqueue(
+        "directed_detection:auth:injection",
+        {"area": "auth", "goal": "injection", "instruction": "check auth routes"},
+    )
+    tools = build_directed_task_tools(work_queue, coverage_store)
+    claim_tool = next(t for t in tools if t.name == "claim_directed_task")
+    complete_tool = next(t for t in tools if t.name == "complete_directed_task")
+
+    claim_tool.invoke({})
+    result = complete_tool.invoke({"task_id": task_id, "note": "checked, found nothing"})
+    assert "completed" in result.lower()
+
+
+def test_complete_directed_task_fails_for_unclaimed_task(work_queue, coverage_store):
+    tools = build_directed_task_tools(work_queue, coverage_store)
+    complete_tool = next(t for t in tools if t.name == "complete_directed_task")
+    result = complete_tool.invoke({"task_id": 99999, "note": "n/a"})
+    assert "could not complete" in result.lower()
+
+
+def test_complete_directed_task_closes_the_matching_coverage_checklist_item(work_queue, coverage_store):
+    """The actual closed-loop guarantee: completing a directed task, even
+    with nothing found, leaves evidence that flips the checklist item from
+    open to closed on the next review cycle -- not just a queue-status
+    change with no effect on coverage."""
+    coverage_store.build_checklist(
+        areas=["get_user_by_name"], goals=["sql-injection"], bar_template="{area}::{goal}"
+    )
+    assert len(coverage_store.open_items()) == 1
+
+    task_id = work_queue.enqueue(
+        "directed_detection:get_user_by_name:sql-injection",
+        {
+            "area": "get_user_by_name",
+            "goal": "sql-injection",
+            "instruction": "check get_user_by_name for sql-injection",
+        },
+    )
+    tools = build_directed_task_tools(work_queue, coverage_store)
+    claim_tool = next(t for t in tools if t.name == "claim_directed_task")
+    complete_tool = next(t for t in tools if t.name == "complete_directed_task")
+
+    claim_tool.invoke({})
+    complete_tool.invoke({"task_id": task_id, "note": "checked, found nothing suspicious"})
+
+    result = coverage_store.review_cycle()
+    assert len(result["closed_this_cycle"]) == 1
+    assert coverage_store.open_items() == []
+
+
+def test_build_detector_directed_subagent_shape(findings, index, work_queue, coverage_store):
+    subagent = build_detector_directed_subagent(findings, index, work_queue, coverage_store)
+    assert subagent["name"] == "detector-directed"
+    assert "middleware" in subagent
+    # 5 index tools + 2 detector tools + 2 directed-task tools
+    assert len(subagent["tools"]) == 9
