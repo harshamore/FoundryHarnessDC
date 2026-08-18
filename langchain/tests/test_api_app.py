@@ -181,6 +181,27 @@ def test_assessment_status_response_never_contains_the_api_key(client, monkeypat
 # ---------------------------------------------------------------------------
 
 
+def test_cors_allows_the_default_frontend_origin(client):
+    """The Phase 4 frontend runs on its own origin (localhost:3000 by
+    default) -- without CORS headers, a browser blocks every fetch()/
+    EventSource call to this API regardless of this being a local-only
+    tool, so this isn't cosmetic."""
+    resp = client.options(
+        "/assessments",
+        headers={"Origin": "http://localhost:3000", "Access-Control-Request-Method": "POST"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_cors_rejects_an_unlisted_origin(client):
+    resp = client.options(
+        "/assessments",
+        headers={"Origin": "http://evil.example.com", "Access-Control-Request-Method": "POST"},
+    )
+    assert "access-control-allow-origin" not in resp.headers
+
+
 def test_status_for_unknown_assessment_is_404(client):
     resp = client.get("/assessments/does-not-exist/status")
     assert resp.status_code == 404

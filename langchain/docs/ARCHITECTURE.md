@@ -515,7 +515,48 @@ with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
   orchestration layer's own correctness is already proven in
   `tests/test_orchestration_*.py`) plus one live run as a real `uvicorn`
   process, a real HTTP file upload over a real connection.
-- **Phase 4** — a React/Next.js frontend consuming the Phase 3 API.
+- **Phase 4 (done)** — `frontend/`: a real npm-managed Next.js 16 (App
+  Router, Turbopack, TypeScript, Tailwind v4) project, sibling to `src/`,
+  not embedded in the Python package. `lib/types.ts` mirrors the backend's
+  own dataclasses by hand (no schema-generation step exists yet);
+  `lib/api.ts` wraps `POST /assessments` (multipart `FormData`), `GET
+  .../status`, and a `subscribeToEvents()` helper around the browser's
+  native `EventSource` for `GET .../events` — listening for the default
+  `message` event for progress and the backend's named `done` event to
+  know when to fetch the final result. Three views in `app/page.tsx`'s own
+  small state machine (`idle → starting → running → complete/failed`):
+  `ConfigForm` (file upload / GitHub URL toggle, OpenAI key + model
+  dropdown, operator goals, an advanced-options fieldset for Galileo
+  credentials and the concurrency/cycle caps), `LiveEventFeed` (the SSE
+  stream rendered newest-first), and `ResultsSummary` (the rollup plus a
+  "Download CISO report" link straight to `GET .../report`). Credential
+  discipline carries over from the backend: the API key lives only in
+  the form's own React state, travels once in the `POST /assessments`
+  body, and is never logged, persisted (no `localStorage`), or echoed back
+  by anything the frontend renders. `src/foundry/api/app.py` gained
+  `CORSMiddleware` (explicit origin allowlist via `FOUNDRY_CORS_ORIGINS`,
+  default `http://localhost:3000` — not `"*"`, since naming the real
+  origin costs nothing here) — without it a browser blocks every
+  `fetch()`/`EventSource` call regardless of this being a local-only tool.
+
+  Verified with `npm run build`/`npm run lint` (0 errors) and a genuine
+  headless-Chromium Playwright run driving the real `next dev` server
+  against a real `uvicorn` process (`run_assessment` monkeypatched to a
+  fast fake — the same technique `tests/test_api_app.py` already uses,
+  just outside pytest so a real browser could exercise a real HTTP/SSE
+  round trip without a real OpenAI key): filled the form, uploaded a real
+  file, watched live agent/tool events render, reached the results view,
+  and fetched the report link's real content — confirming the uploaded
+  key never appears anywhere in the rendered DOM. One non-obvious thing
+  worth knowing if touching this again: Next.js dev's cross-origin
+  protection treats `127.0.0.1` and `localhost` as different origins even
+  though both resolve to the same dev server; browsing via `127.0.0.1`
+  while the app itself uses relative URLs silently 403s the HMR
+  WebSocket and static chunks, which manifests as controlled form inputs
+  mysteriously reverting to their initial values (React re-renders,
+  discarding the DOM's-only change, once the broken connection forces a
+  remount) — not a bug in the form logic itself. Always drive local
+  Next.js dev servers via `localhost`, not `127.0.0.1`.
 - **Phase 5** — a CISO-ready markdown report, extending
   `ReporterStore.build_rollup`'s existing deterministic aggregation (now
   always run as part of `run_assessment`'s own final step, not just a

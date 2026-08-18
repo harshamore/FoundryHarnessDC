@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from langchain_openai import ChatOpenAI
 
@@ -45,7 +46,24 @@ _DEFAULT_RULES_DIR = Path(
 DEFAULT_MODEL_NAME = "gpt-5.6-luna"
 DEFAULT_GALILEO_PROJECT = "foundry-harness"
 
+# The Phase 4 frontend runs on its own origin (Next.js's dev server,
+# localhost:3000 by default) -- a browser enforces CORS on cross-origin
+# fetch()/EventSource calls regardless of this being a local-only tool, so
+# without this the frontend simply can't reach the API at all. Explicit
+# origin list, not "*" -- this API accepts credentials in request bodies
+# (never cookies), so wildcard-with-credentials risk doesn't apply here,
+# but naming the real origin(s) instead of allowing all is still the
+# better default. Configurable via env for anyone serving the frontend
+# from somewhere other than the default dev port.
+_CORS_ORIGINS = [o.strip() for o in os.environ.get("FOUNDRY_CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
+
 app = FastAPI(title="Foundry Harness API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 store = AssessmentStore()
 
 # Fire-and-forget background tasks must be referenced somewhere or asyncio

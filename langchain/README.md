@@ -32,12 +32,15 @@ call at a time; the real "index → map → detect → triage → check coverage
 flow for the first time — Constitution V closed for real, not just
 asserted), and Phase 3 (a FastAPI backend — `POST /assessments` accepting
 a file upload or a GitHub URL, `GET .../events` streaming live agent/tool
-activity over Server-Sent Events, `GET .../report`; see `docs/API.md`) are
-done — see `src/foundry/target/repo.py`, `src/foundry/indexer/parser.py`,
-`src/foundry/orchestration/`, and `src/foundry/api/`. The FastAPI backend
-is a standalone surface (`uvicorn foundry.api.app:app`), not wired into
-the Colab notebook — the notebook stays the reference/dev harness Phases
-0-2 build on.
+activity over Server-Sent Events, `GET .../report`; see `docs/API.md`),
+and Phase 4 (a real Next.js frontend — `frontend/` — consuming that API:
+a config form, a live SSE-driven event feed, a results view, and a
+"Download CISO report" link) are done — see `src/foundry/target/repo.py`,
+`src/foundry/indexer/parser.py`, `src/foundry/orchestration/`,
+`src/foundry/api/`, and `frontend/`. The FastAPI backend is a standalone
+surface (`uvicorn foundry.api.app:app`), not wired into the Colab
+notebook — the notebook stays the reference/dev harness Phases 0-2 build
+on.
 
 See `docs/ARCHITECTURE.md` for the full picture and
 `docs/CONSTITUTION_MAPPING.md` for how each constitution principle maps to
@@ -54,6 +57,7 @@ actual code.
 | `src/foundry/target/repo.py` | `from_upload()`/`from_github_url()` — build a `TargetRepo` from uploaded files or a validated, shallow-cloned public GitHub repo (command-injection-safe by construction, file-count/byte caps, dependency directories skipped), no LLM |
 | `src/foundry/orchestration/` | `concurrency.py` (`run_bounded()`, a generic bounded-concurrency primitive), `agent_runner.py` (`run_single_subagent()` — `.ainvoke()` by default, `.astream_events()` when given an `on_event` callback), `events.py` (`StreamEventTranslator` — the raw LangGraph stream turned into clean live events), `detection.py` (genuinely concurrent Detector instances — broad rule-sweep+exploratory, N directed workers racing the real `WorkQueue`), `loop_control.py` (pure stop/continue decision logic), `assessment.py` (`run_assessment()` — the real full sequence, tying it all together) |
 | `src/foundry/api/` | `store.py` (`AssessmentStore`, in-memory, no credential-shaped field ever), `app.py` (FastAPI: `POST /assessments`, `GET .../status`, `GET .../events` SSE, `GET .../report`) — see `docs/API.md` |
+| `frontend/` | Next.js 16 app consuming the FastAPI backend: `lib/api.ts`/`lib/types.ts` (typed HTTP + SSE client), `components/ConfigForm.tsx`/`LiveEventFeed.tsx`/`ResultsSummary.tsx`, `app/page.tsx` (the idle→starting→running→complete/failed state machine). API key lives only in React state for the session, never logged or persisted |
 | `src/foundry/detector/tools.py` | `queue_candidate`/`record_rule_gap` — the Detector's only writes, both internal-only (Constitution II) — plus `build_directed_task_tools` (`claim_directed_task`/`complete_directed_task`), which consumes Coverage-Guide's queued gaps and always leaves a coverage-log sweep as evidence, whether or not anything was found |
 | `src/foundry/triager/tools.py` | `list_candidates`/`get_candidate`/`assign_verdict` — `assign_verdict` binds the real Indexer resolver as a closure the model can't see or influence |
 | `src/foundry/coverage/` | `store.py` (`CoverageStore`: the whole FR-067/069/070/071/074 mechanism, no LLM), `tools.py` (one read-only tool, `get_coverage_report`) |
