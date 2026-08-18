@@ -102,6 +102,12 @@ src/foundry/
     coverage_guide.py                   The Coverage-Guide as a DeepAgents SubAgent dict
                                          (FR-073 only — the narrative, not the mechanism)
     reporter.py                          The Reporter as a DeepAgents SubAgent dict
+  observability/
+    galileo.py                     Optional Galileo AI tracing, automatic-only scope:
+                                    build_galileo_callback()/galileo_run_config()/console_url().
+                                    None/no-op without GALILEO_API_KEY, never raises even when
+                                    set and unreachable -- wired only at agent.invoke() call
+                                    sites, touches no Substrate or role store
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
   toy_target/vulnerable_app.py  Shared fixture target every notebook section parses/queries
@@ -109,7 +115,7 @@ data/
                                   published finding + rollup.md (git-ignored, regenerated per run)
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
-tests/ (9 files, 122 tests total)
+tests/ (10 files, 131 tests total)
   test_finding_store.py        16 tests proving Constitution I/III/IV/VI/VIII mechanically,
                                 including task_type_prefix claiming (used by directed detection)
   test_indexer.py               17 tests proving FR-020/021/022/025/026, the real resolver,
@@ -128,12 +134,17 @@ tests/ (9 files, 122 tests total)
                                      BudgetGovernor, no LLM
   test_reporter.py                   23 tests proving FR-079/081/083 and the FR-078/080
                                       overwrite-not-duplicate behavior, no LLM
+  test_observability.py               9 tests proving the Galileo wrapper's opt-in/fail-soft
+                                       behavior with mocked GalileoLogger/GalileoCallback --
+                                       no real network calls; skips entirely (not fails) if
+                                       the `galileo` package (the `observability` extra) isn't
+                                       installed
 notebooks/
-  01_substrate.ipynb            The single, growing Colab notebook: Setup, Substrate,
-                                 Indexer, Cartographer, Detector, Triager, Coverage-Guide,
-                                 Reporter, and Full Pipeline sections — all eight core roles
-                                 plus their combined wiring, in one file, never a separate
-                                 notebook per role
+  01_substrate.ipynb            The single, growing Colab notebook: Setup, Observability,
+                                 Substrate, Indexer, Cartographer, Detector, Triager,
+                                 Coverage-Guide, Reporter, and Full Pipeline sections — all
+                                 eight core roles plus their combined wiring and optional
+                                 tracing, in one file, never a separate notebook per role
 ```
 
 The Indexer's actual indexing (parsing, call graph, persistence, queries) has
@@ -210,6 +221,20 @@ own `tools` list regardless of how many subagents share one main agent —
 but it is the first point in this build where the main agent has more than
 one subagent to choose between on a real request.
 
+**Optional Galileo AI tracing — its own Observability section, ahead of
+Substrate.** A `GalileoCallback` attached to every real `agent.invoke(...)`
+call, added purely at the invocation edges (`src/foundry/observability/
+galileo.py`) — confirmed before building it that this touches zero lines
+in any Substrate or role store, so it can't affect anything this document's
+constitution mapping enforces. Strictly opt-in (`None`/no-op without
+`GALILEO_API_KEY`) and fails soft (a bad key or unreachable Galileo account
+degrades to "no tracing," verified against a real, deliberately invalid key
+returning a real HTTP 401, caught and reported, never raised) — a
+deliberate asymmetry with `OPENAI_API_KEY`, which is allowed to raise since
+that's the actual work failing. See `docs/OBSERVABILITY.md` for the full
+trace/span mapping and the constraints worth knowing (free-tier trace
+budget, SaaS data exposure, self-hosting is Enterprise-only).
+
 **Deferred by design, not forgotten**: FR-038 (dependency scanning) is
 skipped for the same reason FR-039 (secret scanning) mostly overlaps with
 CodeGuard's own `hardcoded-credentials` rule: the toy target has no
@@ -239,10 +264,10 @@ system prompt also now explicitly tells the model to ignore it.
 
 ## What's next (roadmap, not yet built)
 
-All eight core roles are built, and both pieces that were previously
-deferred — the directed-detection loop closure and the all-subagents
-pipeline — are done. What's left is deliberately out of scope for this
-build, not oversight:
+All eight core roles are built, and three pieces that were previously
+deferred — the directed-detection loop closure, the all-subagents
+pipeline, and optional Galileo tracing — are done. What's left is
+deliberately out of scope for this build, not oversight:
 
 - A dedicated Orchestrator subagent with `interrupt_on`-gated tools
   (`mark_coverage_complete`, `override_verdict`) for Constitution X ("the
@@ -255,7 +280,15 @@ build, not oversight:
 - Genuinely concurrent subagent instances (multiple Detector or Triager
   workers running at once against a real, larger target), which is what
   would actually exercise Constitution V beyond what a single top-level
-  call with occasional parallel tool dispatch already covers.
+  call with occasional parallel tool dispatch already covers. Once this
+  lands, Galileo trace timestamps are a natural way to *show* the
+  concurrency actually happened, not just assert it.
+- Deeper Galileo instrumentation (manual `GalileoLogger` spans inside
+  `FindingStore.assign_verdict()`, `CoverageStore.review_cycle()`, and
+  `BudgetGovernor.should_stop()`), so evidence-gate demotions and coverage
+  closures become structured, queryable Galileo data instead of text
+  buried in tool outputs — deliberately deferred in favor of automatic-only
+  tracing first; see `docs/OBSERVABILITY.md`.
 
 See `docs/CONSTITUTION_MAPPING.md` for the full principle-by-principle
 status.

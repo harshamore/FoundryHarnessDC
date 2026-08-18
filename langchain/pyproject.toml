@@ -15,6 +15,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+observability = [
+    "galileo>=2.6,<3",
+]
 
 [build-system]
 requires = ["hatchling"]
