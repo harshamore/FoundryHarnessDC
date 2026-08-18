@@ -30,6 +30,15 @@ needing zero external services, exactly like every other optional piece of
 this build (OpenAI is the only hard requirement, and only for the live-agent
 notebook cells, never for tests).
 
+`galileo` is deliberately its own `[observability]` extra, not folded into
+`[dev]` — the Setup section's install cell (`pip install -e ".[dev]"`)
+never installs it. The Observability section's key-entry cell installs it
+live, in-kernel, only if a key was actually entered (`%pip install --quiet
+-e ".[observability]"`, guarded by `try: import galileo`) — verified
+end-to-end in a fresh environment that genuinely lacked the package:
+installs mid-session with no kernel restart needed, and the very next cell
+picks it up immediately.
+
 If a key **is** set but the account is unreachable or invalid, the failure
 is caught and reported, never raised — verified with a real (deliberately
 invalid) key against Galileo's live API:
