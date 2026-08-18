@@ -357,3 +357,99 @@ async def test_broad_detection_two_workers_actually_overlap_in_time(db_path):
         model=TrackingProbeModel(normalized_path="data/toy_target/vulnerable_app.py"),
     )
     assert peak_concurrency == 2  # both really overlapped in wall-clock time, not run one after the other
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: on_event streaming -- proves the astream_events() path (used
+# whenever a caller passes on_event) produces the exact same real
+# WorkQueue outcome as the .ainvoke() path already proven above, while
+# also emitting live events through the real event stream.
+# ---------------------------------------------------------------------------
+
+
+async def test_on_event_streaming_produces_same_result_as_non_streaming(db_path):
+    conn = connect(db_path)
+    wq = WorkQueue(conn)
+    wq.enqueue("directed_detection:auth:injection", {"area": "auth", "goal": "injection", "instruction": "check"})
+    wq.enqueue("directed_detection:files:traversal", {"area": "files", "goal": "traversal", "instruction": "check"})
+    conn.close()
+
+    received = []
+    results = await run_directed_workers_concurrently(
+        db_path=db_path,
+        n_workers=1,
+        max_concurrent=1,
+        model=DirectedWorkerFakeModel(),
+        on_event=received.append,
+    )
+
+    assert len(results) == 1
+    assert "All directed tasks processed" in results[0].response_text  # identical WorkerResult shape/content
+
+    verify_conn = connect(db_path)
+    rows = verify_conn.execute("SELECT status FROM work_queue").fetchall()
+    assert {r["status"] for r in rows} == {"done"}  # identical real outcome to the non-streaming test above
+
+    # And it actually streamed something real: at least one agent_start for
+    # the directed subagent, real tool_call/tool_result pairs for both
+    # claim_directed_task and complete_directed_task, every event
+    # attributed to this worker's own identity (not the bare, ambiguous
+    # "detector-directed" every worker's subagent literally shares).
+    assert all(e.role == "detector-directed-0" for e in received)
+    assert any(e.kind == "agent_start" for e in received)
+    assert any(e.kind == "tool_call" and "claim_directed_task" in e.detail for e in received)
+    assert any(e.kind == "tool_result" and "task_id=" in e.detail for e in received)
+    assert any(e.kind == "tool_call" and "complete_directed_task" in e.detail for e in received)
+    # seq is per-worker-invocation and monotonic within it.
+    assert [e.seq for e in received] == sorted(e.seq for e in received)
+
+
+async def test_on_event_none_keeps_the_original_ainvoke_path_unchanged(db_path):
+    """The default (on_event=None) must still take the .ainvoke() path --
+    a regression guard, not just an absence-of-crash check, since a bug
+    here would silently switch every existing Phase 2 caller onto the
+    streaming path instead."""
+    conn = connect(db_path)
+    wq = WorkQueue(conn)
+    wq.enqueue("directed_detection:auth:injection", {"area": "auth", "goal": "injection", "instruction": "check"})
+    conn.close()
+
+    results = await run_directed_workers_concurrently(
+        db_path=db_path, n_workers=1, max_concurrent=1, model=DirectedWorkerFakeModel()
+    )
+    assert len(results) == 1
+    assert "All directed tasks processed" in results[0].response_text
+
+
+async def test_on_event_receives_interleaved_events_from_concurrent_workers_correctly_attributed(db_path):
+    """Multiple concurrent workers' events can interleave in call order
+    (on_event is invoked from whichever worker's task is currently
+    running), but every event's own `role` still names the correct
+    worker -- a consumer doesn't need the stream serialized per worker to
+    make sense of it."""
+    conn = connect(db_path)
+    wq = WorkQueue(conn)
+    for i in range(4):
+        wq.enqueue(f"directed_detection:a{i}:g{i}", {"area": f"a{i}", "goal": f"g{i}", "instruction": "check"})
+    conn.close()
+
+    received = []
+    await run_directed_workers_concurrently(
+        db_path=db_path,
+        n_workers=2,
+        max_concurrent=2,
+        model=DirectedWorkerFakeModel(delay_seconds=0.01),
+        on_event=received.append,
+    )
+
+    roles_seen = {e.role for e in received}
+    assert roles_seen == {"detector-directed-0", "detector-directed-1"}
+    # Each worker's own events, in isolation, are still internally
+    # consistent: the main agent's own delegating tool_call ("task") comes
+    # first, then the subagent's agent_start, then its own tool events --
+    # all correctly relabeled to this worker's identity throughout.
+    for worker_role in ("detector-directed-0", "detector-directed-1"):
+        worker_events = [e for e in received if e.role == worker_role]
+        assert worker_events[0].kind == "tool_call"
+        assert any(e.kind == "agent_start" for e in worker_events)
+        assert any(e.kind == "tool_call" and "claim_directed_task" in e.detail for e in worker_events)

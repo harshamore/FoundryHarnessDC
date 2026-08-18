@@ -139,6 +139,17 @@ src/foundry/
   orchestration/
     concurrency.py                  run_bounded(): generic asyncio.Semaphore-bounded
                                      concurrency primitive -- Constitution V made real
+    agent_runner.py                  run_single_subagent(): one subagent, one throwaway
+                                      main agent, one real invocation -- .ainvoke() by
+                                      default, .astream_events() when given an on_event
+                                      callback (Phase 3). Shared by detection.py and
+                                      assessment.py so the streaming logic lives in one place
+    events.py                         AssessmentEvent/StreamEventTranslator (Phase 3): the
+                                       raw LangGraph astream_events() stream turned into
+                                       clean agent_start/tool_call/tool_result events,
+                                       stack-based role tracking so a tool result the main
+                                       agent receives back from a subagent is correctly
+                                       attributed, not left on the subagent that just ran
     detection.py                     run_broad_detection_concurrently() (rule-sweep +
                                       exploratory, genuinely concurrent) and
                                       run_directed_workers_concurrently() (N directed
@@ -150,7 +161,16 @@ src/foundry/
                                        decision logic, no model involved
     assessment.py                      run_assessment(): the real index -> map -> detect ->
                                         triage -> check coverage -> detect the gaps ->
-                                        repeat -> report sequence, tying the above together
+                                        repeat -> report sequence, tying the above together;
+                                        now also always runs the deterministic rollup
+                                        (FR-081) as its final step
+  api/
+    store.py                        AssessmentStore/AssessmentRecord (Phase 3): in-memory
+                                     assessment registry, no credential-shaped field ever
+                                     (structurally guarded, not just convention)
+    app.py                           FastAPI app: POST /assessments (file upload or GitHub
+                                      URL), GET .../status, GET .../events (SSE, live
+                                      agent/tool visibility), GET .../report. See docs/API.md
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
   toy_target/vulnerable_app.py  Shared Python fixture target every notebook section parses/queries
@@ -164,7 +184,7 @@ data/
                                   published finding + rollup.md (git-ignored, regenerated per run)
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
-tests/ (16 files, 215 tests total)
+tests/ (18 files, 255 tests total)
   test_finding_store.py        17 tests proving Constitution I/III/IV/VI/VIII mechanically,
                                 including task_type_prefix claiming (used by directed detection)
                                 and queue_candidate's cross-connection dedup race (Phase 2)
@@ -208,7 +228,7 @@ tests/ (16 files, 215 tests total)
   test_orchestration_concurrency.py    6 tests proving run_bounded's actual concurrency bound
                                         (real overlap detection via a shared counter + sleep,
                                         not just "never exceeded"), no LLM, no DeepAgents
-  test_orchestration_detection.py       6 tests: the Phase 2 centerpiece -- real
+  test_orchestration_detection.py       9 tests: the Phase 2 centerpiece -- real
                                          create_deep_agent(...) graphs driven by scripted fake
                                          BaseChatModel subclasses (bind_tools the only no-op
                                          override; every tool call goes through the real
@@ -216,16 +236,37 @@ tests/ (16 files, 215 tests total)
                                          workers never double-claim a real WorkQueue task and
                                          rule-sweep/exploratory genuinely overlap in wall-clock
                                          time -- found and fixed the queue_candidate
-                                         cross-connection race in the process
+                                         cross-connection race in the process. Plus 3 Phase 3
+                                         tests proving the on_event streaming path produces the
+                                         identical real outcome as .ainvoke(), correctly
+                                         attributes interleaved concurrent workers' events
+  test_orchestration_events.py           12 tests proving StreamEventTranslator (Phase 3):
+                                          role attribution, the stack-based revert once a
+                                          subagent's chain ends, Command vs ToolMessage output
+                                          extraction -- pure, against synthetic events shaped
+                                          like the real ones, no LLM
   test_orchestration_loop_control.py     9 tests proving evaluate_cycle's stop/continue
                                           decision and Constitution VI's conjunction, pure and
                                           deterministic, no LLM
-  test_orchestration_assessment.py        2 tests proving run_assessment's full sequence end
+  test_orchestration_assessment.py        3 tests proving run_assessment's full sequence end
                                            to end -- real indexing, real deterministic
                                            fallback, real concurrent detection, the loop
-                                           correctly closing via directed-detection evidence
-                                           and correctly stopping via the no-progress guard
-                                           when it can't
+                                           correctly closing via directed-detection evidence,
+                                           correctly stopping via the no-progress guard when it
+                                           can't, and (Phase 3) that on_event streams live
+                                           events through the whole real sequence without
+                                           changing the real outcome
+  test_api_store.py                       9 tests proving the in-memory AssessmentStore
+                                           (Phase 3), including the structural guard that
+                                           AssessmentRecord never grows a credential-shaped
+                                           field, no HTTP, no LLM
+  test_api_app.py                          15 tests proving the FastAPI backend (Phase 3) via
+                                            TestClient with run_assessment monkeypatched --
+                                            routing, validation, that neither the create nor
+                                            the status response ever echoes the API key back,
+                                            SSE formatting. Skips entirely (not fails) if the
+                                            `fastapi`/`uvicorn`/`python-multipart` (the `[api]`
+                                            extra) aren't installed
 notebooks/
   01_substrate.ipynb            The single, growing Colab notebook: Setup, Observability,
                                  Substrate, Indexer, Cartographer, Detector, Triager,
@@ -453,16 +494,34 @@ with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
   calls through the real LangGraph `ToolNode` — the only thing faked is
   the model's response content. `bind_tools` is the sole framework method
   overridden as a no-op.
-- **Phase 3/4** — a FastAPI backend wrapping the same `src/foundry/*`
-  library (no logic duplicated), streaming agent/tool events via
-  `CompiledStateGraph.astream_events()` (the same underlying LangChain
-  event stream Galileo's callback already taps); a React/Next.js frontend
-  consuming it.
+- **Phase 3 (done)** — `src/foundry/api/`: a FastAPI backend wrapping
+  `run_assessment` and `foundry.target.repo`, no logic duplicated.
+  `POST /assessments` (file upload or GitHub URL, credentials, goals) runs
+  in a background `asyncio.Task`; `GET .../status`, `GET .../events`
+  (Server-Sent Events), `GET .../report` (the deterministic rollup, ahead
+  of Phase 5's CISO-specific format). Live agent/tool visibility —
+  the second of the five original asks — is now real: every subagent call
+  `foundry.orchestration.agent_runner.run_single_subagent` makes can
+  stream through `.astream_events()` instead of `.ainvoke()`
+  (`foundry.orchestration.events.StreamEventTranslator` turns the raw
+  LangGraph stream into clean `agent_start`/`tool_call`/`tool_result`
+  events), and the SSE endpoint just tails the per-assessment event log
+  those events feed. `openai_api_key` builds a real `ChatOpenAI` instance
+  passed directly as `AssessmentConfig.model` — never a process-wide env
+  var, which would race the moment two assessments used different keys.
+  `GALILEO_API_KEY` is a documented exception (the `galileo` SDK's own
+  config is a process-wide singleton) — see `docs/API.md`. Verified via
+  FastAPI's `TestClient` with `run_assessment` monkeypatched (the
+  orchestration layer's own correctness is already proven in
+  `tests/test_orchestration_*.py`) plus one live run as a real `uvicorn`
+  process, a real HTTP file upload over a real connection.
+- **Phase 4** — a React/Next.js frontend consuming the Phase 3 API.
 - **Phase 5** — a CISO-ready markdown report, extending
-  `ReporterStore.build_rollup`'s existing deterministic aggregation with an
-  LLM-authored executive summary (deterministic fallback underneath,
-  matching the Cartographer's FR-036a / Coverage-Guide's FR-073 pattern),
-  downloadable from the backend.
+  `ReporterStore.build_rollup`'s existing deterministic aggregation (now
+  always run as part of `run_assessment`'s own final step, not just a
+  manual notebook cell) with an LLM-authored executive summary
+  (deterministic fallback underneath, matching the Cartographer's FR-036a
+  / Coverage-Guide's FR-073 pattern), downloadable from the backend.
 
 Scoped deliberately to local-only, single-user for now — no auth or
 multi-tenant secret storage yet; API keys live in memory for the session

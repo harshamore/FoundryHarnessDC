@@ -1,10 +1,11 @@
 """Real concurrent Detector execution (Phase 2): multiple subagent
 *instances* actually running at once -- via `asyncio.gather` on separate
-`.ainvoke()` calls, each on its own `sqlite3.Connection` to the same
-database (WAL mode, the schema's default since the Substrate section) --
-not one top-level agent choosing to batch several tool calls into a single
-LLM turn, which is all the Full Pipeline section's single combined agent
-ever proved.
+`.ainvoke()`/`.astream_events()` calls (`foundry.orchestration.
+agent_runner.run_single_subagent`), each on its own `sqlite3.Connection`
+to the same database (WAL mode, the schema's default since the Substrate
+section) -- not one top-level agent choosing to batch several tool calls
+into a single LLM turn, which is all the Full Pipeline section's single
+combined agent ever proved.
 
 Each worker opens its own connection deliberately, rather than sharing one
 across concurrent asyncio tasks: `WorkQueue.claim_next()`'s atomicity was
@@ -18,13 +19,10 @@ mocking around the framework).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from deepagents import create_deep_agent
-
-from foundry.agents._middleware import minimal_filesystem_middleware
 from foundry.agents.detector import (
     build_detector_directed_subagent,
     build_detector_exploratory_subagent,
@@ -33,40 +31,19 @@ from foundry.agents.detector import (
 from foundry.codeguard.loader import Rule
 from foundry.coverage.store import CoverageStore
 from foundry.indexer.store import IndexStore
-from foundry.observability.galileo import galileo_run_config
+from foundry.orchestration.agent_runner import RoleResult, run_single_subagent
 from foundry.orchestration.concurrency import run_bounded
+from foundry.orchestration.events import AssessmentEvent
 from foundry.substrate.db import connect
 from foundry.substrate.finding_store import FindingStore
 from foundry.substrate.work_queue import WorkQueue
 
 DEFAULT_MODEL = "openai:gpt-5.6-luna"
 
-
-@dataclass(frozen=True)
-class WorkerResult:
-    run_name: str
-    response_text: str
-
-
-async def _run_single_subagent(
-    *, model: str | Any, subagent: dict, main_system_prompt: str, user_message: str, galileo_callback, run_name: str
-) -> WorkerResult:
-    """One concurrent worker's real, complete unit of work: its own
-    single-subagent main agent, one real `.ainvoke()` call. `model` is
-    typed `str | Any` (not `str | BaseChatModel`) so tests can pass a
-    scripted fake chat model instance without importing langchain_core
-    here just for a type hint."""
-    agent = create_deep_agent(
-        model=model,
-        subagents=[subagent],
-        middleware=[minimal_filesystem_middleware()],
-        system_prompt=main_system_prompt,
-    )
-    response = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": user_message}]},
-        config=galileo_run_config(galileo_callback, run_name=run_name),
-    )
-    return WorkerResult(run_name=run_name, response_text=response["messages"][-1].content)
+# Same shape, different name for this module's own vocabulary ("worker",
+# not "role") -- see foundry.orchestration.agent_runner for the shared
+# implementation both this module and assessment.py build on.
+WorkerResult = RoleResult
 
 
 async def run_broad_detection_concurrently(
@@ -76,6 +53,7 @@ async def run_broad_detection_concurrently(
     security_map_digest: str,
     model: str | Any = DEFAULT_MODEL,
     galileo_callback=None,
+    on_event: Callable[[AssessmentEvent], None] | None = None,
 ) -> list[WorkerResult]:
     """Rule-sweep and exploratory Detector, run as two genuinely concurrent
     subagent instances against the same database -- the first half of
@@ -83,13 +61,17 @@ async def run_broad_detection_concurrently(
     (Constitution II) exactly like the sequential notebook cells already
     proved; running them concurrently changes nothing about what either
     one is allowed to do, only how many wall-clock seconds both together
-    take."""
+    take. `on_event` (Phase 3) is called from whichever worker's own task
+    is currently running -- events from both workers can interleave in
+    call order, same as their real concurrent execution; each event's own
+    `role` still names the correct worker, so a consumer doesn't need
+    them serialized to make sense of the stream."""
 
     async def rule_sweep_factory() -> WorkerResult:
         conn = connect(db_path)
         try:
             subagent = build_detector_rule_sweep_subagent(FindingStore(conn), IndexStore(conn), rules)
-            return await _run_single_subagent(
+            return await run_single_subagent(
                 model=model,
                 subagent=subagent,
                 main_system_prompt=(
@@ -103,6 +85,7 @@ async def run_broad_detection_concurrently(
                 ),
                 galileo_callback=galileo_callback,
                 run_name="detector-rule-sweep",
+                on_event=on_event,
             )
         finally:
             conn.close()
@@ -111,7 +94,7 @@ async def run_broad_detection_concurrently(
         conn = connect(db_path)
         try:
             subagent = build_detector_exploratory_subagent(FindingStore(conn), IndexStore(conn), security_map_digest)
-            return await _run_single_subagent(
+            return await run_single_subagent(
                 model=model,
                 subagent=subagent,
                 main_system_prompt=(
@@ -124,6 +107,7 @@ async def run_broad_detection_concurrently(
                 ),
                 galileo_callback=galileo_callback,
                 run_name="detector-exploratory",
+                on_event=on_event,
             )
         finally:
             conn.close()
@@ -131,14 +115,21 @@ async def run_broad_detection_concurrently(
     return await run_bounded([rule_sweep_factory, exploratory_factory], max_concurrent=2)
 
 
-def _directed_worker_factory(worker_index: int, *, db_path: Path, model: str | Any, galileo_callback):
+def _directed_worker_factory(
+    worker_index: int,
+    *,
+    db_path: Path,
+    model: str | Any,
+    galileo_callback,
+    on_event: Callable[[AssessmentEvent], None] | None = None,
+):
     async def factory() -> WorkerResult:
         conn = connect(db_path)
         try:
             subagent = build_detector_directed_subagent(
                 FindingStore(conn), IndexStore(conn), WorkQueue(conn), CoverageStore(conn)
             )
-            return await _run_single_subagent(
+            return await run_single_subagent(
                 model=model,
                 subagent=subagent,
                 main_system_prompt=(
@@ -152,6 +143,7 @@ def _directed_worker_factory(worker_index: int, *, db_path: Path, model: str | A
                 ),
                 galileo_callback=galileo_callback,
                 run_name=f"detector-directed-{worker_index}",
+                on_event=on_event,
             )
         finally:
             conn.close()
@@ -166,6 +158,7 @@ async def run_directed_workers_concurrently(
     max_concurrent: int = 4,
     model: str | Any = DEFAULT_MODEL,
     galileo_callback=None,
+    on_event: Callable[[AssessmentEvent], None] | None = None,
 ) -> list[WorkerResult]:
     """`n_workers` directed-detection worker instances, each independently
     looping `claim_directed_task`/investigate/`complete_directed_task`
@@ -174,9 +167,11 @@ async def run_directed_workers_concurrently(
     subagent instances bounded to `max_concurrent` at once (Constitution
     V). More workers than pending tasks is fine -- the extras simply claim
     nothing and finish immediately, the same as an idle rule-sweep pass
-    over an empty index would."""
+    over an empty index would. `on_event` (Phase 3): see
+    `run_broad_detection_concurrently`'s docstring -- same interleaving
+    behavior, now across up to `max_concurrent` workers instead of two."""
     factories = [
-        _directed_worker_factory(i, db_path=db_path, model=model, galileo_callback=galileo_callback)
+        _directed_worker_factory(i, db_path=db_path, model=model, galileo_callback=galileo_callback, on_event=on_event)
         for i in range(n_workers)
     ]
     return await run_bounded(factories, max_concurrent=max_concurrent)

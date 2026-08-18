@@ -16,13 +16,11 @@ stops.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from deepagents import create_deep_agent
-
-from foundry.agents._middleware import minimal_filesystem_middleware
 from foundry.agents.reporter import build_reporter_subagent
 from foundry.agents.triager import build_triager_subagent
 from foundry.cartographer.fallback import (
@@ -37,12 +35,13 @@ from foundry.codeguard.loader import load_rules
 from foundry.coverage.store import CoverageStore
 from foundry.indexer.parser import index_file
 from foundry.indexer.store import IndexStore
-from foundry.observability.galileo import galileo_run_config
+from foundry.orchestration.agent_runner import run_single_subagent
 from foundry.orchestration.detection import (
     WorkerResult,
     run_broad_detection_concurrently,
     run_directed_workers_concurrently,
 )
+from foundry.orchestration.events import AssessmentEvent
 from foundry.orchestration.loop_control import evaluate_cycle, has_directed_work_available
 from foundry.reporter.store import ReporterStore
 from foundry.substrate.budget import BudgetCaps, BudgetGovernor
@@ -70,6 +69,7 @@ class AssessmentConfig:
     run_cartographer_agent: bool = True
     run_triager_agent: bool = True
     run_reporter_agent: bool = True
+    on_event: Callable[[AssessmentEvent], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -80,26 +80,7 @@ class AssessmentResult:
     published_reports: int
     security_map_digest: str
     detection_results: list[WorkerResult]
-
-
-async def _run_single_role(
-    *, model: str | Any, subagent: dict, main_system_prompt: str, user_message: str, galileo_callback, run_name: str
-) -> str:
-    """One sequential single-subagent step (Cartographer, Triager,
-    Reporter) -- these aren't asked to run concurrently with anything, only
-    the Detector halves and directed workers are (see
-    `foundry.orchestration.detection`)."""
-    agent = create_deep_agent(
-        model=model,
-        subagents=[subagent],
-        middleware=[minimal_filesystem_middleware()],
-        system_prompt=main_system_prompt,
-    )
-    response = await agent.ainvoke(
-        {"messages": [{"role": "user", "content": user_message}]},
-        config=galileo_run_config(galileo_callback, run_name=run_name),
-    )
-    return response["messages"][-1].content
+    rollup: str
 
 
 async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
@@ -141,7 +122,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
             from foundry.agents.cartographer import build_cartographer_subagent
 
             cartographer_subagent = build_cartographer_subagent(security_map, index_store)
-            await _run_single_role(
+            await run_single_subagent(
                 model=config.model,
                 subagent=cartographer_subagent,
                 main_system_prompt=(
@@ -155,6 +136,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
                 ),
                 galileo_callback=config.galileo_callback,
                 run_name="cartographer",
+                on_event=config.on_event,
             )
         security_map_digest = security_map.digest()
 
@@ -179,6 +161,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
                 security_map_digest=security_map_digest,
                 model=config.model,
                 galileo_callback=config.galileo_callback,
+                on_event=config.on_event,
             )
         )
 
@@ -213,6 +196,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
                 max_concurrent=config.max_concurrent,
                 model=config.model,
                 galileo_callback=config.galileo_callback,
+                on_event=config.on_event,
             )
             detection_results.extend(directed_results)
 
@@ -228,7 +212,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
         published_reports = 0
         if config.run_reporter_agent:
             reporter_subagent = build_reporter_subagent(finding_store, reporter_store, index_store)
-            await _run_single_role(
+            await run_single_subagent(
                 model=config.model,
                 subagent=reporter_subagent,
                 main_system_prompt=(
@@ -242,8 +226,15 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
                 ),
                 galileo_callback=config.galileo_callback,
                 run_name="reporter",
+                on_event=config.on_event,
             )
             published_reports = len(reporter_store.list_published())
+
+        # FR-081's rollup: entirely deterministic aggregation, no LLM
+        # needed, so it always runs -- even if run_reporter_agent is False,
+        # an honest "0 confirmed findings published" rollup is still a
+        # real, correct summary of that state, not an error.
+        rollup = reporter_store.build_rollup(coverage_store)
 
         return AssessmentResult(
             cycles_run=cycle,
@@ -252,6 +243,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
             published_reports=published_reports,
             security_map_digest=security_map_digest,
             detection_results=detection_results,
+            rollup=rollup,
         )
     finally:
         conn.close()
@@ -261,7 +253,7 @@ async def _run_triager_pass(config: AssessmentConfig, security_map_digest: str) 
     conn = connect(config.db_path)
     try:
         triager_subagent = build_triager_subagent(FindingStore(conn), IndexStore(conn), security_map_digest)
-        await _run_single_role(
+        await run_single_subagent(
             model=config.model,
             subagent=triager_subagent,
             main_system_prompt=(
@@ -274,6 +266,7 @@ async def _run_triager_pass(config: AssessmentConfig, security_map_digest: str) 
             ),
             galileo_callback=config.galileo_callback,
             run_name="triager",
+            on_event=config.on_event,
         )
     finally:
         conn.close()

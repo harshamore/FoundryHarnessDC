@@ -227,3 +227,39 @@ async def test_run_assessment_stops_via_no_progress_guard_when_directed_work_nev
     assert result.coverage_complete is False
     assert result.cycles_run <= config.max_cycles
     assert result.stop_reason != ""
+
+
+async def test_run_assessment_streams_live_events_when_on_event_is_given(tmp_path, target):
+    """Phase 3: passing on_event switches the whole assessment onto the
+    streaming path (every real subagent call it makes, broad detection and
+    the directed loop alike), without changing the real outcome -- same
+    checklist-closing behavior test_run_assessment_closes_the_checklist_
+    via_the_directed_loop already proved for the non-streaming path."""
+    normalized_path = target.files[0].normalized_path
+    received = []
+    config = AssessmentConfig(
+        target=target,
+        db_path=tmp_path / "assessment_streamed.sqlite3",
+        reports_dir=tmp_path / "reports_streamed",
+        operator_goals=["sql-injection"],
+        rules_dir=REPO_ROOT / "data" / "codeguard" / "rules",
+        model=CombinedDetectorFakeModel(normalized_path=normalized_path),
+        max_directed_workers=3,
+        max_concurrent=3,
+        max_cycles=5,
+        budget_caps=BudgetCaps(yield_threshold=0.0),
+        run_cartographer_agent=False,
+        run_triager_agent=False,
+        run_reporter_agent=False,
+        on_event=received.append,
+    )
+
+    result = await run_assessment(config)
+
+    assert result.coverage_complete is True  # identical real outcome to the non-streaming test
+    assert len(received) > 0
+    roles_seen = {e.role for e in received}
+    assert "detector-rule-sweep" in roles_seen
+    assert "detector-exploratory" in roles_seen
+    assert any(role.startswith("detector-directed") for role in roles_seen)
+    assert all(e.seq >= 1 for e in received)
