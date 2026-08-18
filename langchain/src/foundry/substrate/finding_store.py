@@ -66,6 +66,11 @@ class FindingStore:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """The underlying connection, shared with other substrate stores on the same DB."""
+        return self._conn
+
     def queue_candidate(
         self,
         *,
@@ -177,6 +182,16 @@ class FindingStore:
                 "SELECT COUNT(*) AS n FROM findings WHERE verdict = ?", (verdict,)
             ).fetchone()
             return row["n"]
+
+    def list_by_verdict(self, verdict: Verdict) -> list[sqlite3.Row]:
+        """Every finding with this exact verdict -- what the Reporter reads
+        to find publishable (`true-positive`) findings (spec.md §5.8,
+        Constitution II: only `true-positive` ever leaves the internal
+        store)."""
+        with lock_for(self._conn):
+            return self._conn.execute(
+                "SELECT * FROM findings WHERE verdict = ? ORDER BY id", (verdict,)
+            ).fetchall()
 
     def record_rule_gap(self, finding_fingerprint: str, vulnerability_class: str, pattern: str) -> None:
         """FR-042: when the Detector's exploratory hunting confirms a

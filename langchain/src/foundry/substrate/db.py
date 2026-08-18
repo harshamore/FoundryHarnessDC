@@ -100,6 +100,16 @@ CREATE TABLE IF NOT EXISTS coverage_log (
     note TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS finding_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_fingerprint TEXT NOT NULL UNIQUE,
+    severity TEXT NOT NULL CHECK (severity IN ('critical', 'high', 'medium', 'low')),
+    weakness_class TEXT,
+    report_path TEXT NOT NULL,
+    published_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

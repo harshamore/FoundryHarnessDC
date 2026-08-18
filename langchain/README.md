@@ -6,15 +6,14 @@ as the Detector's rule corpus, built against Cisco's open-source [Foundry
 Security Spec](https://github.com/CiscoDevNet/foundry-security-spec) and its
 11-principle constitution.
 
-**Status:** the substrate (finding store, work queue, budget governor), the
-Indexer (deterministic parser, query interface), the Cartographer
-(fallback-guaranteed, LLM-authored security map), the Detector (CodeGuard
-rule-sweep + exploratory hunting), the Triager (evidence-gated verdicts),
-and Coverage-Guide (a mechanical checklist wired to the budget governor) are
-built and tested. Reporter onward is a roadmap, built one notebook section
-at a time. See `docs/ARCHITECTURE.md` for the full picture and
-`docs/CONSTITUTION_MAPPING.md` for how each constitution principle maps to
-actual code.
+**Status:** all eight core roles are built and tested — the substrate
+(finding store, work queue, budget governor), Indexer, Cartographer,
+Detector, Triager, Coverage-Guide, and Reporter. Validator runs degraded
+(no testbed configured); Orchestrator's lifecycle role is the notebook's own
+`create_deep_agent` calls, not a dedicated subagent. What's left is wiring
+everything into one running pipeline instead of one call per role — see
+`docs/ARCHITECTURE.md` for the full picture and `docs/CONSTITUTION_MAPPING.md`
+for how each constitution principle maps to actual code.
 
 ## What's here
 
@@ -27,8 +26,9 @@ actual code.
 | `src/foundry/detector/tools.py` | `queue_candidate`/`record_rule_gap` — the Detector's only writes, both internal-only (Constitution II) |
 | `src/foundry/triager/tools.py` | `list_candidates`/`get_candidate`/`assign_verdict` — `assign_verdict` binds the real Indexer resolver as a closure the model can't see or influence |
 | `src/foundry/coverage/` | `store.py` (`CoverageStore`: the whole FR-067/069/070/071/074 mechanism, no LLM), `tools.py` (one read-only tool, `get_coverage_report`) |
-| `src/foundry/agents/` | The Indexer, Cartographer, Detector (two SubAgents: rule-sweep + exploratory), Triager, and Coverage-Guide as DeepAgents `SubAgent`s, plus `_middleware.py`'s shared filesystem-tool restriction |
-| `tests/` (8 files) | 89 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles, FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074, and FR-036a mechanically, no LLM |
+| `src/foundry/reporter/` | `classification.py` (CWE lookup + the FR-083 denylist scan, no LLM), `store.py` (`ReporterStore`: FR-079/081/083 enforced structurally), `tools.py` (LangChain tool wrappers) |
+| `src/foundry/agents/` | All eight core roles' SubAgents (Indexer, Cartographer, Detector ×2, Triager, Coverage-Guide, Reporter), plus `_middleware.py`'s shared filesystem-tool restriction |
+| `tests/` (9 files) | 112 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically, no LLM |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared target every section parses/queries |
 | `notebooks/01_substrate.ipynb` | The single, growing Colab notebook — setup, substrate, and every role's section get appended here as they're built |
@@ -71,10 +71,16 @@ coverage checklist mechanically (no OpenAI call needed for any of it),
 wires the result directly into the Substrate section's `BudgetGovernor` —
 closing Constitution VI end to end with real inputs instead of hand-typed
 booleans — then makes one real OpenAI call for a short remaining-work
-narrative. Each real call costs a small real amount on `gpt-5.6-luna`.
-Every later role (Reporter, ...) gets appended as a new section in this
-same notebook, not a separate file — so nothing later ever loses the
-environment setup established.
+narrative. Section 8 (Reporter), the last core role, publishes a
+self-contained report for every `true-positive` finding and a rollup —
+with two live demos of its own: publishing a `needs-review` finding gets
+rejected outright, and publishing a report that names the model or
+provider gets rejected too, both before anything is written to disk. Each
+real call costs a small real amount on `gpt-5.6-luna`. Coverage-Guide's
+directed-task loop closure and the Full Pipeline section are next, appended
+the same way — every future section in this same notebook, never a
+separate file, so nothing later ever loses the environment setup
+established.
 
 ## Attribution
 
