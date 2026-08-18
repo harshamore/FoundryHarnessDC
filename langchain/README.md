@@ -35,7 +35,7 @@ for how each constitution principle maps to actual code.
 | `src/foundry/reporter/` | `classification.py` (CWE lookup + the FR-083 denylist scan, no LLM), `store.py` (`ReporterStore`: FR-079/081/083 enforced structurally), `tools.py` (LangChain tool wrappers) |
 | `src/foundry/observability/galileo.py` | Optional Galileo AI tracing, automatic-only scope — `build_galileo_callback()`/`galileo_run_config()`/`console_url()`. Wired only at `agent.invoke()` call sites; touches no Substrate or role store. `None`/no-op whenever `GALILEO_API_KEY` isn't set, never raises even when set and unreachable |
 | `src/foundry/agents/` | All eight core roles' SubAgents (Indexer, Cartographer, Detector ×3 — rule-sweep, exploratory, directed —, Triager, Coverage-Guide, Reporter), plus `_middleware.py`'s shared filesystem-tool restriction |
-| `tests/` (10 files) | 131 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically, no LLM, no external network calls |
+| `tests/` (10 files) | 141 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically, no LLM, no external network calls |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared target every section parses/queries |
 | `notebooks/01_substrate.ipynb` | The single, growing Colab notebook — setup, observability, substrate, and every role's section get appended here as they're built |

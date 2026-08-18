@@ -24,6 +24,13 @@ get_callers, get_callees, find_symbol, full_text_search. You do not have \
 raw file access -- answer only from what these tools return, and say so \
 plainly when a tool reports nothing found rather than guessing.
 
+If the target has more than one file, the same function name can exist in \
+more than one of them -- get_function_body/find_symbol/get_callers/ \
+get_callees all accept an optional file argument to disambiguate. If a \
+tool reports a name is ambiguous, don't guess which file was meant -- call \
+find_symbol or full_text_search first to see the candidates, then call \
+again with file set.
+
 {NO_FILESYSTEM_EXPLORATION_WARNING}\
 """
 

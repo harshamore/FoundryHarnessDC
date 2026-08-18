@@ -59,7 +59,11 @@ src/foundry/
     parser.py                    AST-based function inventory (decorators included, e.g. Flask
                                   `@app.route(...)`, for FR-031) + direct-call graph (FR-020/021,
                                   decorators deliberately excluded here) — no model call
-    store.py                      Persists the index; the query interface (FR-022); the real evidence-gate resolver
+    store.py                      Persists the index; the query interface (FR-022, now file-
+                                   disambiguated -- get_function_body/find_symbol/get_callers/
+                                   get_callees accept an optional `file` since `functions` has
+                                   always been UNIQUE(file, name), not UNIQUE(name)); the real
+                                   evidence-gate resolver
     tools.py                       LangChain tool wrappers around the store
   cartographer/
     store.py                       Persists the security map + digest (FR-035)
@@ -115,11 +119,14 @@ data/
                                   published finding + rollup.md (git-ignored, regenerated per run)
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
-tests/ (10 files, 131 tests total)
+tests/ (10 files, 141 tests total)
   test_finding_store.py        16 tests proving Constitution I/III/IV/VI/VIII mechanically,
                                 including task_type_prefix claiming (used by directed detection)
-  test_indexer.py               17 tests proving FR-020/021/022/025/026, the real resolver,
-                                 the filesystem-tool restriction, and decorator capture, no LLM
+  test_indexer.py               27 tests proving FR-020/021/022/025/026, the real resolver,
+                                 the filesystem-tool restriction, decorator capture, and
+                                 file-disambiguated reads (two files, same function name,
+                                 same-name-still-works-unambiguous, and the tool layer
+                                 reporting ambiguity instead of guessing), no LLM
   test_cartographer.py           12 tests proving FR-036a's fallback guarantee, the digest, and
                                   the filesystem-tool restriction, no LLM
   test_codeguard.py               9 tests proving the rule corpus loads and parses correctly, no LLM
@@ -292,6 +299,54 @@ deliberately out of scope for this build, not oversight:
 
 See `docs/CONSTITUTION_MAPPING.md` for the full principle-by-principle
 status.
+
+### Toward a real product (multi-session program, in progress)
+
+Separately from the constitution gaps above, this notebook-driven reference
+implementation is being turned into an actual product: a web frontend
+(upload a file or a public GitHub URL, plus OpenAI/Galileo credentials), a
+live view of which agent/tool is running during an assessment, genuinely
+concurrent agent execution instead of one call at a time, a downloadable
+CISO-ready report, and multi-language support (tree-sitter-based, starting
+with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
+
+- **Phase 0 (done)** — file-disambiguated `IndexStore` reads
+  (`get_function_body`/`find_symbol`/`get_callers`/`get_callees` now accept
+  an optional `file`; `functions` has always been `UNIQUE(file, name)`, not
+  `UNIQUE(name)` — this was never actually guaranteed unique, it just never
+  collided against the single-file toy target). Blocking prerequisite for
+  multi-file and multi-language targets, where name collisions become
+  likely rather than theoretical.
+- **Phase 1** — target ingestion (file upload / GitHub URL) and a
+  multi-language parser, with CodeGuard rule-sweep filtered by the target's
+  detected language(s) (the rule corpus already carries a `languages` field
+  per rule, `src/foundry/codeguard/loader.py::Rule.languages` — currently
+  unused).
+- **Phase 2** — a real async orchestration layer (`asyncio.gather`/
+  `asyncio.Semaphore`, bounded to respect OpenAI's actual rate limits —
+  Constitution V made real, not just asserted) running Detector rule-sweep
+  and exploratory concurrently, and multiple directed-detection workers
+  concurrently claiming from the already-proven `WorkQueue.claim_next()`.
+  This is also where the real "index → map → detect → triage → check
+  coverage → detect the gaps → report" sequence gets formalized as actual
+  control flow — today `BudgetGovernor.should_stop()` and
+  `CoverageStore.review_cycle()`/`is_complete()` have zero callers in
+  `src/`, only in tests and hand-sequenced notebook cells.
+- **Phase 3/4** — a FastAPI backend wrapping the same `src/foundry/*`
+  library (no logic duplicated), streaming agent/tool events via
+  `CompiledStateGraph.astream_events()` (the same underlying LangChain
+  event stream Galileo's callback already taps); a React/Next.js frontend
+  consuming it.
+- **Phase 5** — a CISO-ready markdown report, extending
+  `ReporterStore.build_rollup`'s existing deterministic aggregation with an
+  LLM-authored executive summary (deterministic fallback underneath,
+  matching the Cartographer's FR-036a / Coverage-Guide's FR-073 pattern),
+  downloadable from the backend.
+
+Scoped deliberately to local-only, single-user for now — no auth or
+multi-tenant secret storage yet; API keys live in memory for the session
+only, matching the credential-handling discipline this build has followed
+throughout (`GALILEO_API_KEY` never written to disk, never logged).
 
 ## Quickstart
 

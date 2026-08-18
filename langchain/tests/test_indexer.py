@@ -139,15 +139,108 @@ def test_get_callers_and_get_callees_are_consistent(store):
 
 
 def test_find_symbol_reports_location(store):
-    row = store.find_symbol("get_user_by_name")
-    assert row is not None
-    assert row["file"] == NORMALIZED_PATH
-    assert row["lineno"] > 0
+    rows = store.find_symbol("get_user_by_name")
+    assert len(rows) == 1
+    assert rows[0]["file"] == NORMALIZED_PATH
+    assert rows[0]["lineno"] > 0
 
 
 def test_full_text_search_finds_substring(store):
     matches = store.full_text_search("SELECT id, username, email")
-    assert "get_user_by_name" in matches
+    assert (NORMALIZED_PATH, "get_user_by_name") in matches
+
+
+# ---------------------------------------------------------------------------
+# Phase 0: file-disambiguated reads. `functions` has always been
+# UNIQUE(file, name), not UNIQUE(name) -- a bare name was never actually
+# guaranteed unique, it just never collided against the single-file toy
+# target. These prove the disambiguation behavior directly with two files
+# that both define a function named "handler".
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def multi_file_store(tmp_path) -> IndexStore:
+    conn = connect(tmp_path / "multi_file_test.sqlite3")
+    s = IndexStore(conn)
+
+    file_a = tmp_path / "a.py"
+    file_a.write_text("def handler():\n    return unique_to_a()\n\n\ndef unique_to_a():\n    return 1\n")
+    file_b = tmp_path / "b.py"
+    file_b.write_text("def handler():\n    return unique_to_b()\n\n\ndef unique_to_b():\n    return 2\n")
+
+    result_a = index_file(file_a, tmp_path)
+    result_b = index_file(file_b, tmp_path)
+    s.write_index("a.py", result_a.functions, result_a.call_edges)
+    s.write_index("b.py", result_b.functions, result_b.call_edges)
+    return s
+
+
+def test_get_function_body_raises_on_ambiguous_name_without_file(multi_file_store):
+    with pytest.raises(ValueError, match="more than one file"):
+        multi_file_store.get_function_body("handler")
+
+
+def test_get_function_body_disambiguated_by_file(multi_file_store):
+    body_a = multi_file_store.get_function_body("handler", file="a.py")
+    body_b = multi_file_store.get_function_body("handler", file="b.py")
+    assert "unique_to_a" in body_a
+    assert "unique_to_b" in body_b
+
+
+def test_get_function_body_unambiguous_name_still_works_without_file(multi_file_store):
+    # "unique_to_a" only exists in one file -- no disambiguation needed,
+    # exactly the toy target's existing (still-supported) single-file shape.
+    body = multi_file_store.get_function_body("unique_to_a")
+    assert body is not None
+    assert "return 1" in body
+
+
+def test_find_symbol_returns_all_matches_when_ambiguous(multi_file_store):
+    rows = multi_file_store.find_symbol("handler")
+    assert len(rows) == 2
+    assert {r["file"] for r in rows} == {"a.py", "b.py"}
+
+
+def test_find_symbol_disambiguated_by_file(multi_file_store):
+    rows = multi_file_store.find_symbol("handler", file="a.py")
+    assert len(rows) == 1
+    assert rows[0]["file"] == "a.py"
+
+
+def test_get_callers_narrowed_by_file_does_not_merge_unrelated_call_graphs(multi_file_store):
+    callers_in_a = multi_file_store.get_callers("unique_to_a", file="a.py")
+    assert callers_in_a == ["handler"]
+    # "unique_to_a" is never called from b.py's call graph.
+    callers_in_b = multi_file_store.get_callers("unique_to_a", file="b.py")
+    assert callers_in_b == []
+
+
+def test_get_callees_narrowed_by_file_does_not_merge_unrelated_call_graphs(multi_file_store):
+    callees_in_a = multi_file_store.get_callees("handler", file="a.py")
+    assert callees_in_a == ["unique_to_a"]
+    callees_in_b = multi_file_store.get_callees("handler", file="b.py")
+    assert callees_in_b == ["unique_to_b"]
+
+
+def test_full_text_search_does_not_collapse_matches_across_files(multi_file_store):
+    matches = multi_file_store.full_text_search("def handler")
+    assert set(matches) == {("a.py", "handler"), ("b.py", "handler")}
+
+
+def test_get_function_body_tool_reports_ambiguity_instead_of_guessing(multi_file_store):
+    tools = build_index_tools(multi_file_store)
+    get_function_body_tool = next(t for t in tools if t.name == "get_function_body")
+    result = get_function_body_tool.invoke({"name": "handler"})
+    assert "more than one file" in result
+    assert "a.py" in result and "b.py" in result
+
+
+def test_get_function_body_tool_disambiguated_by_file(multi_file_store):
+    tools = build_index_tools(multi_file_store)
+    get_function_body_tool = next(t for t in tools if t.name == "get_function_body")
+    result = get_function_body_tool.invoke({"name": "handler", "file": "a.py"})
+    assert "unique_to_a" in result
 
 
 # ---------------------------------------------------------------------------
