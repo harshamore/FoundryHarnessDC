@@ -131,7 +131,18 @@ async def create_assessment(
 
     # A real ChatOpenAI instance, not a process-wide env var -- see this
     # module's own docstring for why that distinction matters here.
-    chat_model = ChatOpenAI(model=model, api_key=openai_api_key)
+    # use_responses_api=True matches what DeepAgents itself defaults to
+    # when give a plain "openai:..." model *string* (create_deep_agent's
+    # own docstring: "If an openai: model is used, the agent will use the
+    # OpenAI Responses API by default") -- but we pass a pre-built
+    # instance instead (needed for per-request credentials), and
+    # ChatOpenAI's own default is the legacy Chat Completions API, not
+    # Responses. Every subagent call here uses tools, and reasoning
+    # models (the gpt-5.x family) reject `reasoning_effort` together with
+    # function tools on /v1/chat/completions -- without this, every real
+    # run against a reasoning model fails with a 400 from OpenAI before
+    # a single tool call happens.
+    chat_model = ChatOpenAI(model=model, api_key=openai_api_key, use_responses_api=True)
 
     galileo_callback = None
     if galileo_api_key:
