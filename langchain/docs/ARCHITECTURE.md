@@ -136,6 +136,21 @@ src/foundry/
                                     None/no-op without GALILEO_API_KEY, never raises even when
                                     set and unreachable -- wired only at agent.invoke() call
                                     sites, touches no Substrate or role store
+  orchestration/
+    concurrency.py                  run_bounded(): generic asyncio.Semaphore-bounded
+                                     concurrency primitive -- Constitution V made real
+    detection.py                     run_broad_detection_concurrently() (rule-sweep +
+                                      exploratory, genuinely concurrent) and
+                                      run_directed_workers_concurrently() (N directed
+                                      workers, each its own connection, racing the real
+                                      WorkQueue) -- each worker a real create_deep_agent(...)
+                                      instance, its own sqlite3.Connection
+    loop_control.py                   evaluate_cycle()/has_directed_work_available(): the
+                                       pure, deterministic "stop or direct at the gaps"
+                                       decision logic, no model involved
+    assessment.py                      run_assessment(): the real index -> map -> detect ->
+                                        triage -> check coverage -> detect the gaps ->
+                                        repeat -> report sequence, tying the above together
 data/
   codeguard/rules/             Vendored CodeGuard corpus (fetched, git-ignored — see scripts/)
   toy_target/vulnerable_app.py  Shared Python fixture target every notebook section parses/queries
@@ -149,9 +164,10 @@ data/
                                   published finding + rollup.md (git-ignored, regenerated per run)
 scripts/
   fetch_codeguard_rules.py     Pins and vendors the CodeGuard corpus
-tests/ (12 files, 191 tests total)
-  test_finding_store.py        16 tests proving Constitution I/III/IV/VI/VIII mechanically,
+tests/ (16 files, 215 tests total)
+  test_finding_store.py        17 tests proving Constitution I/III/IV/VI/VIII mechanically,
                                 including task_type_prefix claiming (used by directed detection)
+                                and queue_candidate's cross-connection dedup race (Phase 2)
   test_indexer.py               27 tests proving FR-020/021/022/025/026, the real resolver,
                                  the filesystem-tool restriction, decorator capture, and
                                  file-disambiguated reads (two files, same function name,
@@ -189,6 +205,27 @@ tests/ (12 files, 191 tests total)
                                        no real network calls; skips entirely (not fails) if
                                        the `galileo` package (the `observability` extra) isn't
                                        installed
+  test_orchestration_concurrency.py    6 tests proving run_bounded's actual concurrency bound
+                                        (real overlap detection via a shared counter + sleep,
+                                        not just "never exceeded"), no LLM, no DeepAgents
+  test_orchestration_detection.py       6 tests: the Phase 2 centerpiece -- real
+                                         create_deep_agent(...) graphs driven by scripted fake
+                                         BaseChatModel subclasses (bind_tools the only no-op
+                                         override; every tool call goes through the real
+                                         LangGraph ToolNode), proving N concurrent directed
+                                         workers never double-claim a real WorkQueue task and
+                                         rule-sweep/exploratory genuinely overlap in wall-clock
+                                         time -- found and fixed the queue_candidate
+                                         cross-connection race in the process
+  test_orchestration_loop_control.py     9 tests proving evaluate_cycle's stop/continue
+                                          decision and Constitution VI's conjunction, pure and
+                                          deterministic, no LLM
+  test_orchestration_assessment.py        2 tests proving run_assessment's full sequence end
+                                           to end -- real indexing, real deterministic
+                                           fallback, real concurrent detection, the loop
+                                           correctly closing via directed-detection evidence
+                                           and correctly stopping via the no-progress guard
+                                           when it can't
 notebooks/
   01_substrate.ipynb            The single, growing Colab notebook: Setup, Observability,
                                  Substrate, Indexer, Cartographer, Detector, Triager,
@@ -377,16 +414,45 @@ with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
   before this). Verified against a real, live public GitHub repo end to
   end (clone → walk → parse → index → query), not just the vendored
   fixtures.
-- **Phase 2** — a real async orchestration layer (`asyncio.gather`/
-  `asyncio.Semaphore`, bounded to respect OpenAI's actual rate limits —
-  Constitution V made real, not just asserted) running Detector rule-sweep
-  and exploratory concurrently, and multiple directed-detection workers
-  concurrently claiming from the already-proven `WorkQueue.claim_next()`.
-  This is also where the real "index → map → detect → triage → check
-  coverage → detect the gaps → report" sequence gets formalized as actual
-  control flow — today `BudgetGovernor.should_stop()` and
-  `CoverageStore.review_cycle()`/`is_complete()` have zero callers in
-  `src/`, only in tests and hand-sequenced notebook cells.
+- **Phase 2 (done)** — `src/foundry/orchestration/`: `concurrency.py`'s
+  `run_bounded()` (a generic `asyncio.Semaphore`-bounded concurrency
+  primitive — Constitution V made real, not just asserted); `detection.py`'s
+  `run_broad_detection_concurrently()` (rule-sweep + exploratory, two
+  genuinely concurrent subagent instances) and
+  `run_directed_workers_concurrently()` (N directed-detection workers,
+  each on its own connection, racing the real `WorkQueue.claim_next()`);
+  `loop_control.py`'s `evaluate_cycle()`/`has_directed_work_available()`
+  (the pure, deterministic decision logic); and `assessment.py`'s
+  `run_assessment()`, which formalizes the real "index → map → detect →
+  triage → check coverage → detect the gaps → repeat → report" sequence as
+  actual control flow for the first time — `BudgetGovernor.should_stop()`
+  and `CoverageStore.review_cycle()`/`is_complete()` previously had zero
+  callers in `src/`, only in tests and hand-sequenced notebook cells. This
+  is also where the earlier-paused pipeline-reordering discussion
+  resolves: directed detection now runs right after Coverage-Guide
+  identifies gaps, inside a real loop, not stuck after Reporter in a
+  single-pass demo.
+
+  Building this surfaced a real, previously-latent race:
+  `FindingStore.queue_candidate()`'s dedup check (SELECT, then
+  conditionally INSERT) was only ever proven safe for concurrent callers
+  *sharing one connection* (`lock_for` serializes that case); two
+  genuinely separate connections — exactly what concurrent Detector
+  workers use — can both pass the SELECT before either commits, and the
+  loser used to see a raw `sqlite3.IntegrityError` instead of the same
+  "already queued" outcome a same-connection race produces. Fixed by
+  catching the `IntegrityError` and reading back the winning row, proven
+  under both real concurrent DeepAgents agent execution
+  (`tests/test_orchestration_detection.py`) and a dedicated
+  regression test in `tests/test_finding_store.py`.
+
+  Verified without a real OpenAI key (none available in this build
+  environment): scripted fake `BaseChatModel` subclasses drive real
+  `create_deep_agent(...)` graphs — real `task`-tool delegation, real
+  `claim_directed_task`/`complete_directed_task`/`queue_candidate` tool
+  calls through the real LangGraph `ToolNode` — the only thing faked is
+  the model's response content. `bind_tools` is the sole framework method
+  overridden as a no-op.
 - **Phase 3/4** — a FastAPI backend wrapping the same `src/foundry/*`
   library (no logic duplicated), streaming agent/tool events via
   `CompiledStateGraph.astream_events()` (the same underlying LangChain

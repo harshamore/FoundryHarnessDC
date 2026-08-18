@@ -22,11 +22,16 @@ calls, not a dedicated subagent with operator-approval gates.
 Separately, this is being turned into a real product (frontend, live agent
 visibility, real parallel execution, downloadable CISO reports, multi-language
 support) — see `docs/ARCHITECTURE.md`'s "Toward a real product" section for
-the full phased plan. Phase 0 (file-disambiguated indexing) and Phase 1
+the full phased plan. Phase 0 (file-disambiguated indexing), Phase 1
 (target ingestion from a file upload or a GitHub URL, plus a multi-language
 parser for JavaScript/TypeScript/TSX/Java/Go alongside Python, plus
-language-filtered CodeGuard rule-sweep) are done — see
-`src/foundry/target/repo.py` and `src/foundry/indexer/parser.py`.
+language-filtered CodeGuard rule-sweep), and Phase 2 (a real async
+orchestration layer — genuinely concurrent Detector instances, not one
+call at a time; the real "index → map → detect → triage → check coverage
+→ detect the gaps → repeat → report" loop, formalized as actual control
+flow for the first time — Constitution V closed for real, not just
+asserted) are done — see `src/foundry/target/repo.py`,
+`src/foundry/indexer/parser.py`, and `src/foundry/orchestration/`.
 
 See `docs/ARCHITECTURE.md` for the full picture and
 `docs/CONSTITUTION_MAPPING.md` for how each constitution principle maps to
@@ -41,13 +46,14 @@ actual code.
 | `src/foundry/cartographer/` | `store.py` (security map + digest, FR-035), `fallback.py` (per-section deterministic fallback, FR-036a, no LLM), `tools.py` (LangChain tool wrappers) |
 | `src/foundry/codeguard/` | `loader.py` (parses the vendored rule corpus, FR-041; `load_rules(..., languages=...)` filters rule-sweep by the target's detected language, no LLM), `tools.py` (`list_rules`/`get_rule`) |
 | `src/foundry/target/repo.py` | `from_upload()`/`from_github_url()` — build a `TargetRepo` from uploaded files or a validated, shallow-cloned public GitHub repo (command-injection-safe by construction, file-count/byte caps, dependency directories skipped), no LLM |
+| `src/foundry/orchestration/` | `concurrency.py` (`run_bounded()`, a generic bounded-concurrency primitive), `detection.py` (genuinely concurrent Detector instances — broad rule-sweep+exploratory, N directed workers racing the real `WorkQueue`), `loop_control.py` (pure stop/continue decision logic), `assessment.py` (`run_assessment()` — the real full sequence, tying it all together) |
 | `src/foundry/detector/tools.py` | `queue_candidate`/`record_rule_gap` — the Detector's only writes, both internal-only (Constitution II) — plus `build_directed_task_tools` (`claim_directed_task`/`complete_directed_task`), which consumes Coverage-Guide's queued gaps and always leaves a coverage-log sweep as evidence, whether or not anything was found |
 | `src/foundry/triager/tools.py` | `list_candidates`/`get_candidate`/`assign_verdict` — `assign_verdict` binds the real Indexer resolver as a closure the model can't see or influence |
 | `src/foundry/coverage/` | `store.py` (`CoverageStore`: the whole FR-067/069/070/071/074 mechanism, no LLM), `tools.py` (one read-only tool, `get_coverage_report`) |
 | `src/foundry/reporter/` | `classification.py` (CWE lookup + the FR-083 denylist scan, no LLM), `store.py` (`ReporterStore`: FR-079/081/083 enforced structurally), `tools.py` (LangChain tool wrappers) |
 | `src/foundry/observability/galileo.py` | Optional Galileo AI tracing, automatic-only scope — `build_galileo_callback()`/`galileo_run_config()`/`console_url()`. Wired only at `agent.invoke()` call sites; touches no Substrate or role store. `None`/no-op whenever `GALILEO_API_KEY` isn't set, never raises even when set and unreachable |
 | `src/foundry/agents/` | All eight core roles' SubAgents (Indexer, Cartographer, Detector ×3 — rule-sweep, exploratory, directed —, Triager, Coverage-Guide, Reporter), plus `_middleware.py`'s shared filesystem-tool restriction |
-| `tests/` (12 files) | 191 tests total proving the constitution's I/II/III/IV/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically, no LLM, no external network calls |
+| `tests/` (16 files) | 215 tests total proving the constitution's I/II/III/IV/V/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically where possible, and — for Phase 2's real concurrency — via scripted fake chat models driving real DeepAgents graphs rather than mocking around the framework; no external network calls |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared Python target every notebook section parses/queries |
 | `data/multi_lang_toy_target/` | Phase 1's multi-language sibling — one small deliberately-vulnerable file per non-Python supported language |

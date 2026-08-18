@@ -231,6 +231,54 @@ def test_concurrent_queue_candidate_on_shared_connection_does_not_collide(db_pat
     assert len(distinct_ids) == 1 + (n_threads // 2)  # one shared id + one per distinct symbol
 
 
+def test_concurrent_queue_candidate_on_separate_connections_same_fingerprint_does_not_raise(db_path):
+    """A third concurrency shape, found live building Phase 2's real
+    concurrent Detector workers (tests/test_orchestration_detection.py):
+    genuinely separate connections -- not threads sharing one connection,
+    which `lock_for` already serializes -- racing to queue the exact same
+    (path, symbol, vulnerability_class). `lock_for` is per-connection, so
+    it cannot and does not protect this case; `findings.fingerprint`'s
+    UNIQUE constraint is what actually prevents a duplicate row, but the
+    losing connection's INSERT used to surface as a raw
+    sqlite3.IntegrityError instead of the same "deduplicated" outcome a
+    same-connection race produces. This is a realistic scenario, not a
+    contrived one -- rule-sweep and exploratory Detector instances can
+    both flag the same symbol for the same vulnerability class at once."""
+    errors: list[tuple[int, str]] = []
+    results: list[tuple[int, str, bool]] = []
+    lock = threading.Lock()
+
+    def queue(i: int) -> None:
+        try:
+            conn = _conn(db_path)  # each thread gets its OWN connection
+            store = FindingStore(conn)
+            result = store.queue_candidate(
+                normalized_path="app.py",
+                symbol="same_symbol",
+                vulnerability_class="same-class",
+                description=f"from connection {i}",
+                technique=f"technique-{i}",
+            )
+            with lock:
+                results.append(result)
+            conn.close()
+        except Exception as e:  # noqa: BLE001 -- capturing for the assertion below
+            with lock:
+                errors.append((i, f"{type(e).__name__}: {e}"))
+
+    n_threads = 10
+    threads = [threading.Thread(target=queue, args=(i,)) for i in range(n_threads)]
+    [t.start() for t in threads]
+    [t.join(timeout=10) for t in threads]
+
+    assert errors == []  # no raw IntegrityError leaked out to any caller
+    ids = {r[0] for r in results}
+    assert len(ids) == 1  # every connection converged on the same single row
+    was_new_flags = [r[2] for r in results]
+    assert was_new_flags.count(True) == 1  # exactly one connection actually inserted it
+    assert was_new_flags.count(False) == n_threads - 1  # every other one correctly saw it as a dedup
+
+
 # ---------------------------------------------------------------------------
 # task_type_prefix claiming -- lets a consumer claim "any task of this
 # family" (e.g. Coverage-Guide's directed-detection tasks, each queued with

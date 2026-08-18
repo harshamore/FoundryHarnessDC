@@ -83,9 +83,20 @@ class FindingStore:
         """Insert a candidate finding, deduplicating by fingerprint (FR-045).
 
         Returns (finding_id, fingerprint, was_new). The dedup check and the
-        insert both happen under this connection's lock -- concurrent tool
-        calls sharing one connection would otherwise race between the
-        SELECT and the INSERT.
+        insert both happen under this connection's lock, which is enough
+        to serialize concurrent tool calls sharing one connection -- but
+        `lock_for` is per-connection, not cross-connection, so two
+        genuinely separate connections (Phase 2's concurrent Detector
+        workers, each on its own connection) can both pass the SELECT
+        before either commits its INSERT: real, reproducible under actual
+        concurrent agent execution (tests/test_orchestration_detection.py)
+        when two different subagent instances flag the same (path, symbol,
+        vulnerability_class) concurrently -- not a hypothetical edge case,
+        a real thing rule-sweep and exploratory can both do at once.
+        `findings.fingerprint` is UNIQUE at the schema level regardless
+        (Constitution XI), so the losing connection's INSERT is caught here
+        and treated the same as a same-connection dedup hit -- `(existing
+        id, fp, False)` -- rather than an uncaught IntegrityError.
         """
         fp = fingerprint(normalized_path, symbol, vulnerability_class)
 
@@ -108,6 +119,17 @@ class FindingStore:
                     (fp, normalized_path, symbol, vulnerability_class, description, technique),
                 )
                 self._conn.execute("COMMIT")
+            except sqlite3.IntegrityError:
+                # Another connection won the race and committed this exact
+                # fingerprint between our SELECT and our INSERT -- not a
+                # real error, the same outcome a same-connection dedup hit
+                # would have produced if the timing had been slightly
+                # different.
+                self._conn.execute("ROLLBACK")
+                existing = self._conn.execute(
+                    "SELECT id FROM findings WHERE fingerprint = ?", (fp,)
+                ).fetchone()
+                return existing["id"], fp, False
             except Exception:
                 self._conn.execute("ROLLBACK")
                 raise
