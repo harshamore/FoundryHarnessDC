@@ -223,6 +223,73 @@ def test_rollup_written_to_disk(reporter, index):
 
 
 # ---------------------------------------------------------------------------
+# Phase 5: build_ciso_report -- same facts, severity-led structure, an
+# LLM-authored executive summary on top (no model given here, so it's
+# always the deterministic fallback -- executive_summary.py's own tests
+# cover the real-model path with a scripted fake).
+# ---------------------------------------------------------------------------
+
+
+async def test_ciso_report_has_severity_led_sections(reporter, findings, index):
+    coverage = CoverageStore(index.conn)
+    id1, _, _ = findings.queue_candidate(
+        normalized_path=NORMALIZED_PATH, symbol="get_user_by_name",
+        vulnerability_class="sql-injection", description="c", technique="t",
+    )
+    findings.assign_verdict(
+        id1, "true-positive", [Citation(NORMALIZED_PATH, "get_user_by_name", "impact")],
+        "report", resolver=lambda c: True,
+    )
+    reporter.publish_finding_report(id1, "Finding 1", "Body.", "critical", "CWE-89")
+
+    report = await reporter.build_ciso_report(coverage, model=None, stop_reason="coverage complete")
+    assert "# CISO Security Assessment Report" in report
+    assert "## Executive Summary" in report
+    assert "[fallback]" in report
+    assert "## Key Findings by Severity" in report
+    assert "**critical** (1): sql-injection" in report
+    assert "## Remediation Priorities" in report
+    assert "1. **critical** -- get_user_by_name" in report
+    assert "## Coverage & Scope" in report
+    assert "coverage complete" in report
+
+
+async def test_ciso_report_with_no_findings_has_no_remediation_items(reporter, index):
+    coverage = CoverageStore(index.conn)
+    report = await reporter.build_ciso_report(coverage, model=None, stop_reason="coverage complete")
+    assert "No confirmed findings were published." in report
+    assert "No remediation items" in report
+
+
+async def test_ciso_report_written_to_its_own_file(reporter, index):
+    coverage = CoverageStore(index.conn)
+    await reporter.build_ciso_report(coverage, model=None)
+    report_path = reporter.output_dir / "ciso_report.md"
+    assert report_path.exists()
+    assert "CISO Security Assessment Report" in report_path.read_text()
+
+
+async def test_ciso_report_never_duplicates_rollup_facts_incorrectly(reporter, findings, index):
+    """Both formats share one aggregation pass (`_gather`) -- this proves
+    they can't silently disagree."""
+    coverage = CoverageStore(index.conn)
+    id1, _, _ = findings.queue_candidate(
+        normalized_path=NORMALIZED_PATH, symbol="get_user_by_name",
+        vulnerability_class="sql-injection", description="c", technique="t",
+    )
+    findings.assign_verdict(
+        id1, "true-positive", [Citation(NORMALIZED_PATH, "get_user_by_name", "impact")],
+        "report", resolver=lambda c: True,
+    )
+    reporter.publish_finding_report(id1, "Finding 1", "Body.", "high", "CWE-89")
+
+    rollup = reporter.build_rollup(coverage)
+    ciso_report = await reporter.build_ciso_report(coverage, model=None)
+    assert "1 confirmed finding(s) published" in rollup
+    assert "**high** (1)" in ciso_report
+
+
+# ---------------------------------------------------------------------------
 # Tools and SubAgent wrapping (structural, no LLM invoked)
 # ---------------------------------------------------------------------------
 

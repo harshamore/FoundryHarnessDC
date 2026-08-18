@@ -199,6 +199,18 @@ async def test_run_assessment_closes_the_checklist_via_the_directed_loop(tmp_pat
     assert result.coverage_complete is True
     assert result.cycles_run == 1
 
+    # Phase 5: the CISO report is always written as the assessment's final
+    # step, alongside the plain rollup -- the fake model here doesn't
+    # recognize the executive-summary prompt, so it lands as the
+    # deterministic fallback (see test_executive_summary.py for the
+    # real-model path), but the file itself, and the report's own
+    # structure, are real.
+    ciso_report_path = config.reports_dir / "ciso_report.md"
+    assert ciso_report_path.exists()
+    ciso_report = ciso_report_path.read_text()
+    assert "# CISO Security Assessment Report" in ciso_report
+    assert "## Executive Summary" in ciso_report
+
 
 async def test_run_assessment_stops_via_no_progress_guard_when_directed_work_never_completes(tmp_path, target):
     """If directed workers claim tasks but never complete them (no

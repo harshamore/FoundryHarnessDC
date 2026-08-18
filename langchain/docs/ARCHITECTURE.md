@@ -557,12 +557,30 @@ with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
   discarding the DOM's-only change, once the broken connection forces a
   remount) — not a bug in the form logic itself. Always drive local
   Next.js dev servers via `localhost`, not `127.0.0.1`.
-- **Phase 5** — a CISO-ready markdown report, extending
-  `ReporterStore.build_rollup`'s existing deterministic aggregation (now
-  always run as part of `run_assessment`'s own final step, not just a
-  manual notebook cell) with an LLM-authored executive summary
-  (deterministic fallback underneath, matching the Cartographer's FR-036a
-  / Coverage-Guide's FR-073 pattern), downloadable from the backend.
+- **Phase 5 (done)** — `ReporterStore.build_ciso_report()` (`src/foundry/
+  reporter/store.py`): a CISO-ready markdown report built on the exact
+  same aggregation `build_rollup` already uses (both now share one
+  private `_gather()` pass, so the two formats can never disagree),
+  restructured severity-first with deterministic remediation priorities
+  and a coverage/scope statement, plus one LLM-authored executive-summary
+  paragraph on top (`src/foundry/reporter/executive_summary.py`) --
+  matching the Cartographer's FR-036a / Coverage-Guide's FR-073 "real
+  call, deterministic fallback underneath" pattern already established in
+  this codebase. The executive summary is one direct `model.ainvoke(...)`
+  call, not a DeepAgents subagent turn (it runs after every real agent
+  role has already finished, so a full subagent graph would be pure
+  overhead for one paragraph) -- any failure (bad key, network, timeout,
+  empty response) or an FR-083 denylist hit on the model's own output
+  falls back to a deterministic paragraph instead, the same "fails soft"
+  shape already used for Galileo tracing. `run_assessment` writes both
+  `rollup.md` (unchanged, still what `AssessmentResult.rollup` carries)
+  and `ciso_report.md` as its final step; `GET /assessments/{id}/report`
+  now serves the latter. Verified with a scripted fake `BaseChatModel`
+  covering both the real-summary and every fallback path (model absent,
+  model raises, model returns empty text, model output fails the FR-083
+  scan), plus an end-to-end assertion inside the existing full
+  `run_assessment` proof that `ciso_report.md` actually lands on disk
+  with the right structure -- 12 new tests (269 total).
 
 Scoped deliberately to local-only, single-user for now — no auth or
 multi-tenant secret storage yet; API keys live in memory for the session

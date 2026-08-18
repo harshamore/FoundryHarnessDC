@@ -282,10 +282,10 @@ def test_report_for_unknown_assessment_is_404(client):
     assert resp.status_code == 404
 
 
-def test_report_after_completion_serves_the_real_rollup_file(client, monkeypatch, tmp_path):
+def test_report_after_completion_serves_the_real_ciso_report_file(client, monkeypatch, tmp_path):
     async def fake_run_assessment(config):
         config.reports_dir.mkdir(parents=True, exist_ok=True)
-        (config.reports_dir / "rollup.md").write_text("# Evaluation Rollup\n\nreal rollup content")
+        (config.reports_dir / "ciso_report.md").write_text("# CISO Security Assessment Report\n\nreal report content")
         return _fake_result()
 
     monkeypatch.setattr(app_module, "run_assessment", fake_run_assessment)
@@ -300,4 +300,4 @@ def test_report_after_completion_serves_the_real_rollup_file(client, monkeypatch
 
     resp = client.get(f"/assessments/{assessment_id}/report")
     assert resp.status_code == 200
-    assert "real rollup content" in resp.text
+    assert "real report content" in resp.text

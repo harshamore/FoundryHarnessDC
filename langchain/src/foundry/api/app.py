@@ -205,17 +205,21 @@ async def stream_events(assessment_id: str) -> StreamingResponse:
 
 @app.get("/assessments/{assessment_id}/report")
 async def get_report(assessment_id: str) -> FileResponse:
-    """Serves the deterministic rollup (FR-081) -- a real, working report
-    today, ahead of Phase 5's CISO-specific executive-summary format.
-    Per-finding reports (`ReporterStore.publish_finding_report`'s own
-    markdown files) live alongside it in the same `reports_dir`, not
-    served individually by this endpoint yet."""
+    """Serves the CISO-ready report (Phase 5, `ReporterStore.
+    build_ciso_report`): severity-led structure, remediation priorities,
+    a coverage/scope statement, and an LLM-authored executive summary
+    with a deterministic fallback underneath. The plain deterministic
+    rollup (FR-081) still exists alongside it as `rollup.md` in the same
+    `reports_dir` (and is what `AssessmentResult.rollup` carries), just
+    not served by this endpoint anymore. Per-finding reports
+    (`ReporterStore.publish_finding_report`'s own markdown files) also
+    live in `reports_dir`, not served individually by this endpoint."""
     record = store.get(assessment_id)
     if record is None:
         raise HTTPException(404, "No such assessment.")
     if record.status != AssessmentStatus.COMPLETE:
         raise HTTPException(409, f"Assessment is {record.status.value}, not complete yet.")
-    rollup_path = record.reports_dir / "rollup.md"
-    if not rollup_path.exists():
-        raise HTTPException(404, "No rollup was generated for this assessment.")
-    return FileResponse(rollup_path, media_type="text/markdown", filename="rollup.md")
+    report_path = record.reports_dir / "ciso_report.md"
+    if not report_path.exists():
+        raise HTTPException(404, "No report was generated for this assessment.")
+    return FileResponse(report_path, media_type="text/markdown", filename="ciso_report.md")

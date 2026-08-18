@@ -32,7 +32,7 @@ without it.
 | `/assessments` | `POST` | Start a new assessment: upload files or give a GitHub URL, plus credentials and goals. Returns immediately with an `assessment_id`; the actual run happens in a background task. |
 | `/assessments/{id}/status` | `GET` | Current status (`pending`/`running`/`complete`/`failed`), and the real `AssessmentResult` once complete. |
 | `/assessments/{id}/events` | `GET` | Server-Sent Events stream of live agent/tool activity. Replays everything emitted so far, then keeps streaming until the assessment finishes. |
-| `/assessments/{id}/report` | `GET` | Downloads the deterministic rollup (FR-081) once the assessment is complete. |
+| `/assessments/{id}/report` | `GET` | Downloads the CISO-ready report (Phase 5) once the assessment is complete. |
 
 ### `POST /assessments`
 
@@ -84,18 +84,32 @@ scope; a real limitation the moment this ever serves truly concurrent
 assessments with different Galileo accounts. Flagged here deliberately,
 not discovered later.
 
-## What `/report` serves today, ahead of Phase 5
+## What `/report` serves (Phase 5)
 
-The CISO-ready report format is Phase 5's deliverable, not built yet.
-`/report` serves `ReporterStore.build_rollup()`'s existing deterministic
-rollup (FR-081 -- severity counts, exploited status, component grouping,
-coverage status) in the meantime -- a real, working, correct file, just
-not yet formatted for an executive audience. `run_assessment` now always
-calls `build_rollup()` as its final step (previously only the notebook did
-this, as a separate manual cell); per-finding reports
-(`ReporterStore.publish_finding_report`'s own markdown files) are written
-to the same `reports_dir` but aren't served individually by this endpoint
-yet.
+`/report` serves `ReporterStore.build_ciso_report()`'s output
+(`ciso_report.md`): an executive summary paragraph, then severity-led
+findings, remediation priorities, and a coverage/scope statement --
+structured for a CISO audience, not just a raw data dump. Everything
+except the executive summary is exactly as mechanically derivable as the
+plain rollup below (same underlying aggregation, `ReporterStore._gather`,
+shared by both formats so they can't disagree); only the executive
+summary paragraph ever touches an LLM, via one direct
+`model.ainvoke(...)` call (not a DeepAgents subagent turn -- this runs
+after every real agent role has already finished). If that call fails
+for any reason (bad key, network, timeout, empty response) or its output
+fails the FR-083 denylist scan, a deterministic fallback paragraph is
+used instead -- the report always exists, the same "fails soft" shape
+already established for Galileo tracing and the Cartographer's FR-036a
+security-map fallback.
+
+`ReporterStore.build_rollup()`'s plain deterministic rollup (FR-081 --
+severity counts, exploited status, component grouping, coverage status)
+still runs too and is still written to `reports_dir/rollup.md` --
+`run_assessment` calls both as its final step, in that order. It's what
+`AssessmentResult.rollup` carries, just no longer what `/report` serves.
+Per-finding reports (`ReporterStore.publish_finding_report`'s own
+markdown files) are written to the same `reports_dir` but aren't served
+individually by this endpoint.
 
 ## Testing approach
 

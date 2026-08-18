@@ -236,6 +236,16 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
         # real, correct summary of that state, not an error.
         rollup = reporter_store.build_rollup(coverage_store)
 
+        # Phase 5: the CISO-ready report -- same underlying facts, an
+        # LLM-authored executive summary on top (real call, deterministic
+        # fallback underneath if it fails). Written to its own file
+        # (ciso_report.md) rather than replacing rollup.md, so a plain,
+        # always-available deterministic summary keeps existing even if
+        # this ever needs debugging separately. `AssessmentResult.rollup`
+        # intentionally still carries the plain rollup text above, not
+        # this -- the API's `/report` endpoint serves this file directly.
+        await reporter_store.build_ciso_report(coverage_store, model=config.model, stop_reason=outcome.stop_reason)
+
         return AssessmentResult(
             cycles_run=cycle,
             coverage_complete=outcome.coverage_complete,

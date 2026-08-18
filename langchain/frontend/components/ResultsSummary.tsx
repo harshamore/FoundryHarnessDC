@@ -49,7 +49,7 @@ export default function ResultsSummary({
       <div className="flex gap-3">
         <a
           href={reportUrl}
-          download="rollup.md"
+          download="ciso_report.md"
           className="rounded-md bg-foreground text-background px-4 py-2 text-sm font-medium w-fit"
         >
           Download CISO report
