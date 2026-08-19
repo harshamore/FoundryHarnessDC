@@ -79,9 +79,13 @@ def parse_operator_goals(raw: str) -> list[str]:
 def build_target_summary(target) -> str:
     languages = ", ".join(sorted(target.languages)) or "no supported language detected"
     summary = f"{len(target.files)} file(s) ({languages})"
-    unsupported = len(target.unsupported_files)
+    cloud_files = target.cloud_files
+    unsupported = len(target.unsupported_files) - len(cloud_files)
     if unsupported:
         summary += f", {unsupported} not indexable"
+    if cloud_files:
+        kinds = ", ".join(sorted({f.kind for f in cloud_files}))
+        summary += f", {len(cloud_files)} IaC/IAM file(s) ({kinds})"
     return summary
 
 

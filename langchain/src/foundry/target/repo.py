@@ -24,6 +24,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from foundry.cloud.detect import detect_cloud_kind
 from foundry.indexer.parser import detect_language
 
 DEFAULT_MAX_FILES = 200
@@ -71,6 +72,13 @@ class TargetFile:
 
 
 @dataclass(frozen=True)
+class CloudFile:
+    path: Path
+    normalized_path: str
+    kind: str  # one of foundry.cloud.detect.CLOUD_KINDS
+
+
+@dataclass(frozen=True)
 class TargetRepo:
     root: Path
     files: list[TargetFile]
@@ -83,12 +91,30 @@ class TargetRepo:
         return {f.language for f in self.files if f.language is not None}
 
     @property
+    def cloud_files(self) -> list[CloudFile]:
+        """IaC/IAM content among the unsupported (not-a-code-language)
+        files, content-sniffed (see `foundry.cloud.detect`) since
+        extension alone can't tell a Kubernetes manifest from an
+        unrelated YAML config file. Computed lazily, not during the walk
+        itself -- `_walk_target` stays a pure filename lookup, and this
+        property re-reads only the small subset of files whose extension
+        is even a candidate."""
+        cloud: list[CloudFile] = []
+        for f in self.unsupported_files:
+            kind = detect_cloud_kind(f.path)
+            if kind is not None:
+                cloud.append(CloudFile(path=f.path, normalized_path=f.normalized_path, kind=kind))
+        return cloud
+
+    @property
     def unsupported_files(self) -> list[TargetFile]:
-        """Files walked but not structurally indexable -- Phase 1's
-        language set is Python/JavaScript/TypeScript/TSX/Java/Go, not every
-        language. Tracked explicitly, not silently dropped, so a caller
-        can still show them as a file inventory even though the Indexer
-        can't parse them."""
+        """Files walked but not structurally indexable as *code* -- Phase
+        1's language set is Python/JavaScript/TypeScript/TSX/Java/Go, not
+        every language. Tracked explicitly, not silently dropped, so a
+        caller can still show them as a file inventory even though the
+        Indexer can't parse them. Some of these are further recognized as
+        IaC/IAM content by `cloud_files` above -- "unsupported as code"
+        and "cloud-analyzable" are not mutually exclusive categories."""
         return [f for f in self.files if f.language is None]
 
 

@@ -56,6 +56,26 @@ def test_from_upload_unsupported_extension_tracked_not_dropped():
     assert repo.languages == {"python"}
 
 
+def test_from_upload_recognizes_iac_and_iam_files_as_cloud_files():
+    """Phase 6: IaC/IAM content is walked into `unsupported_files` just
+    like any other non-code file (extension alone can't tell it apart),
+    but `cloud_files` recognizes it via content-sniffing -- no longer a
+    silent no-op the way it was before Phase 6."""
+    repo = from_upload(
+        {
+            "app.py": b"def f(): pass",
+            "main.tf": b'resource "aws_s3_bucket" "x" {}',
+            "policy.json": b'{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:*"}]}',
+            "README.md": b"# not cloud content",
+        }
+    )
+    by_path = {f.normalized_path: f.kind for f in repo.cloud_files}
+    assert by_path == {"main.tf": "terraform", "policy.json": "iam-policy"}
+    # README.md is unsupported-as-code but not cloud content either --
+    # still tracked in unsupported_files, just never promoted to cloud_files.
+    assert {f.normalized_path for f in repo.unsupported_files} == {"main.tf", "policy.json", "README.md"}
+
+
 def test_from_upload_enforces_max_files():
     files = {f"file_{i}.py": b"pass" for i in range(5)}
     with pytest.raises(TargetIngestionError, match="more than 3 files"):

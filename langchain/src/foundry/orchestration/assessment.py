@@ -31,6 +31,9 @@ from foundry.cartographer.fallback import (
     fallback_trust_boundaries,
 )
 from foundry.cartographer.store import SecurityMapStore
+from foundry.cloud.iac_parser import parse_iac_file
+from foundry.cloud.iam_parser import parse_iam_policy_file
+from foundry.cloud.store import CloudResourceStore
 from foundry.codeguard.loader import load_rules
 from foundry.coverage.store import CoverageStore
 from foundry.indexer.parser import index_file
@@ -95,6 +98,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
         work_queue = WorkQueue(conn)
         reporter_store = ReporterStore(conn, config.reports_dir)
         budget_governor = BudgetGovernor(conn, config.budget_caps)
+        cloud_store = CloudResourceStore(conn)
 
         # 1. Index -- deterministic, no model (FR-020). Every supported
         # file in the target, regardless of language.
@@ -103,6 +107,19 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
                 continue
             result = index_file(target_file.path, config.target.root)
             index_store.write_index(target_file.normalized_path, result.functions, result.call_edges)
+
+        # 1b. IaC/IAM indexing (Phase 6) -- parallel to code indexing
+        # above, same "deterministic, no model" spirit (FR-020's spirit
+        # extended to infra). A malformed file raises here the same way a
+        # malformed Python file already raises from index_file above --
+        # no defensive catch, matching that existing precedent rather
+        # than introducing asymmetric robustness between the two.
+        for cloud_file in config.target.cloud_files:
+            if cloud_file.kind == "iam-policy":
+                cloud_result = parse_iam_policy_file(cloud_file.path, cloud_file.normalized_path)
+            else:
+                cloud_result = parse_iac_file(cloud_file.path, cloud_file.normalized_path, cloud_file.kind)
+            cloud_store.write_resources(cloud_file.normalized_path, cloud_result)
 
         # 2. Map -- the deterministic fallback always lands first (FR-036a:
         # "an empty security map is a Cartographer failure, not graceful

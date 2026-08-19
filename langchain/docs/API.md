@@ -32,6 +32,12 @@ silently never activates (`build_galileo_callback` catches the
 `ImportError` and prints a message to the backend's own terminal, not to
 the API response or frontend -- see the Galileo section below).
 
+**Want to upload Terraform too?** Install `pip install -e ".[dev,api,cloud]"`
+-- without the `cloud` extra, CloudFormation/Kubernetes/IAM-policy files
+still ingest normally (they only need `pyyaml`, a base dependency), but a
+`.tf` file raises a clear `ImportError` naming the missing extra the
+moment `run_assessment` tries to parse it (see `docs/CLOUD.md`).
+
 ## Routes
 
 | Route | Method | Purpose |

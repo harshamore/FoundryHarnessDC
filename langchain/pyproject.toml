@@ -27,6 +27,15 @@ api = [
     "uvicorn>=0.32",
     "python-multipart>=0.0.12",
 ]
+cloud = [
+    # Pinned below 5.0: versions 5.x-8.x wrap every scalar value in extra
+    # escaped quote characters and add an internal `__is_block__` marker
+    # to every block dict (verified directly, not assumed) -- a real
+    # behavior change, not a docs gap, that would corrupt every attribute
+    # value this package reads. 4.3.x's plain-dict output is what every
+    # parser in src/foundry/cloud/ is written against.
+    "python-hcl2>=4.3,<5",
+]
 
 [build-system]
 requires = ["hatchling"]

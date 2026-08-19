@@ -276,6 +276,49 @@ async def test_run_assessment_leaves_galileo_console_url_none_when_tracing_not_c
     assert result.galileo_console_url is None
 
 
+async def test_run_assessment_indexes_cloud_files_alongside_code(tmp_path):
+    """Phase 6: parallel to the existing code-indexing proof above --
+    uploading code and IaC/IAM together results in both a populated
+    IndexStore *and* a populated CloudResourceStore from one run,
+    without needing any subagent (this is deterministic ingestion, no
+    LLM involved, so every real agent role is switched off here)."""
+    pytest.importorskip("hcl2")
+    from foundry.cloud.store import CloudResourceStore
+
+    fixture_root = REPO_ROOT / "data" / "cloud_toy_target"
+    files = {"lambda/handler.py": (fixture_root / "lambda" / "handler.py").read_bytes()}
+    for name in ("main.tf", "iam_policy.json", "k8s-deployment.yaml"):
+        files[name] = (fixture_root / name).read_bytes()
+    cloud_target = from_upload(files)
+
+    config = AssessmentConfig(
+        target=cloud_target,
+        db_path=tmp_path / "assessment_cloud.sqlite3",
+        reports_dir=tmp_path / "reports_cloud",
+        operator_goals=["sql-injection"],
+        rules_dir=REPO_ROOT / "data" / "codeguard" / "rules",
+        model=CombinedDetectorFakeModel(normalized_path="lambda/handler.py"),
+        max_directed_workers=1,
+        max_concurrent=1,
+        max_cycles=1,
+        budget_caps=BudgetCaps(yield_threshold=0.0),
+        run_cartographer_agent=False,
+        run_triager_agent=False,
+        run_reporter_agent=False,
+    )
+    await run_assessment(config)
+
+    conn = connect(config.db_path)
+    assert "get_user_by_name" in IndexStore(conn).list_functions()
+
+    cloud_store = CloudResourceStore(conn)
+    addresses = {r.address for r in cloud_store.list_resources()}
+    assert "aws_lambda_function.process_upload" in addresses
+    assert "Deployment.process-upload" in addresses
+    assert "iam-policy.prod-admin-policy" in addresses
+    assert cloud_store.list_grants(principal="iam-policy.prod-admin-policy")
+
+
 async def test_run_assessment_stops_via_no_progress_guard_when_directed_work_never_completes(tmp_path, target):
     """If directed workers claim tasks but never complete them (no
     coverage-log evidence ever recorded), the checklist can never close --

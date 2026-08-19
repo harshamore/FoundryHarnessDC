@@ -1,0 +1,13 @@
+{
+  "PolicyName": "prod-admin-policy",
+  "PolicyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["s3:*", "dynamodb:*", "secretsmanager:GetSecretValue"],
+        "Resource": ["arn:aws:s3:::prod-*", "arn:aws:dynamodb:*:*:table/prod-*", "arn:aws:secretsmanager:*:*:secret:prod/*"]
+      }
+    ]
+  }
+}

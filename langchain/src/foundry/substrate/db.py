@@ -110,6 +110,33 @@ CREATE TABLE IF NOT EXISTS finding_reports (
     published_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS cloud_resources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    attributes TEXT NOT NULL,
+    UNIQUE(file, resource_type, resource_name)
+);
+
+CREATE TABLE IF NOT EXISTS cloud_references (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file TEXT NOT NULL,
+    from_address TEXT NOT NULL,
+    to_address TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloud_grants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    effect TEXT NOT NULL CHECK (effect IN ('Allow', 'Deny')),
+    actions TEXT NOT NULL,
+    resources TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 

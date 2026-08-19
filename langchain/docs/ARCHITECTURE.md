@@ -429,7 +429,14 @@ implementation is being turned into an actual product: a web frontend
 live view of which agent/tool is running during an assessment, genuinely
 concurrent agent execution instead of one call at a time, a downloadable
 CISO-ready report, and multi-language support (tree-sitter-based, starting
-with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
+with Python/JavaScript-TypeScript/Java/Go). Phases 0-5 below are that plan;
+it's done. A second, larger initiative continues past it (Phases 6-8):
+correlating code vulnerabilities with the IaC/IAM governance around them,
+to distinguish a finding that's actually exploitable (exposed, and running
+under a real permission grant) from one that's contained by good
+governance -- static, evidence-gated reasoning, not real dynamic
+exploitation (a scope decision made explicitly with the user; see
+`docs/CLOUD.md`). This is sequenced as:
 
 - **Phase 0 (done)** — file-disambiguated `IndexStore` reads
   (`get_function_body`/`find_symbol`/`get_callers`/`get_callees` now accept
@@ -581,6 +588,44 @@ with Python/JavaScript-TypeScript/Java/Go). This is sequenced as:
   scan), plus an end-to-end assertion inside the existing full
   `run_assessment` proof that `ciso_report.md` actually lands on disk
   with the right structure -- 12 new tests (269 total).
+- **Phase 6 (done)** — `src/foundry/cloud/`: IaC/IAM ingestion & structural
+  indexing. `iac_parser.py` (Terraform via `python-hcl2`, the `[cloud]`
+  extra; CloudFormation and Kubernetes manifests via `pyyaml`, content-
+  sniffed since `.yaml`/`.json` alone can't tell them apart from unrelated
+  config), `iam_parser.py` (standalone IAM policy documents, both bare and
+  the `aws iam get-policy-version`-style wrapper), `store.py`
+  (`CloudResourceStore`, same delete-then-insert-scoped-to-one-file shape
+  as `IndexStore.write_index`), `tools.py` (read-only LangChain tool
+  wrappers, first used by Phase 8). `TargetRepo` gains a `cloud_files`
+  property (`src/foundry/target/repo.py`) — content-sniffed, lazily
+  computed, so a file already known to be unsupported-as-code doesn't get
+  re-read unless its extension is even a candidate. `run_assessment`
+  indexes `config.target.cloud_files` in the same deterministic,
+  no-model-call step as the existing code index. New fixture
+  `data/cloud_toy_target/` (Terraform + a standalone IAM policy + a
+  Kubernetes manifest, wired into one coherent over-permissioned-role
+  scenario) exercises all three formats plus a self-contained vulnerable
+  Lambda handler, for Phase 7/8 to build on. See `docs/CLOUD.md` for the
+  full picture, including several real parsing gotchas found and fixed
+  while building this (python-hcl2's 5.x+ output-shape change, plain
+  `yaml.safe_load` having no constructor for CloudFormation's short-form
+  intrinsic tags, and an initial bug where CloudFormation reference edges
+  were wrongly typed using the *referencing* resource's own type instead
+  of the target's). `hcl2` is imported lazily inside `parse_terraform`
+  itself, not at module load time — `foundry.orchestration.assessment`
+  imports from this package unconditionally, so a top-level import would
+  have broken the harness for anyone without `[cloud]` installed. 35 new
+  tests (306 total), 4 of them skipped (not failed) without `[cloud]`.
+- **Phase 7 (not started)** — deterministic exposure & governance analysis:
+  for each parsed cloud resource, is it network-exposed, and what does its
+  attached identity's grants actually reach? No LLM, no code correlation
+  yet — purely infra-side, building on Phase 6's reference/grant graph.
+- **Phase 8 (not started)** — exploitability classification: correlates
+  confirmed findings to Phase 6/7's infra graph (evidence-gated, allowed to
+  conclude "not correlated" rather than guess), producing exploitable /
+  contained / not-correlated per finding, with the reachable-resource set
+  as blast-radius evidence for exploitable ones. Restructures the CISO
+  report's findings section around this classification.
 
 Scoped deliberately to local-only, single-user for now — no auth or
 multi-tenant secret storage yet; API keys live in memory for the session
