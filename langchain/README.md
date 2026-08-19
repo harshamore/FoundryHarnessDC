@@ -47,17 +47,21 @@ standalone surface (`uvicorn foundry.api.app:app`), not wired into the
 Colab notebook — the notebook stays the reference/dev harness Phases 0-2
 build on.
 
-A second initiative continues past that plan (Phases 6-8): correlating
-code vulnerabilities with the IaC/IAM governance around them, to tell an
-exploitable finding (exposed, running under a real permission grant) from
-one that's contained by good governance — static, evidence-gated
-reasoning, not real dynamic exploitation (a scope decision made
-explicitly with the user). Phase 6 (IaC/IAM ingestion — Terraform,
+A second initiative continues past that plan (Phases 6-8), now also done:
+correlating code vulnerabilities with the IaC/IAM governance around them,
+to tell an exploitable finding (exposed, running under a real permission
+grant) from one that's contained by good governance — static,
+evidence-gated reasoning, not real dynamic exploitation (a scope decision
+made explicitly with the user). Phase 6 (IaC/IAM ingestion — Terraform,
 CloudFormation, Kubernetes manifests, IAM policy documents, all parsed
 into a queryable `CloudResourceStore`, the infra-domain equivalent of the
-Indexer) is done; see `docs/CLOUD.md`. Phases 7 (deterministic exposure/
-governance analysis) and 8 (exploitability classification, correlating
-findings to that graph) are not started yet.
+Indexer), Phase 7 (deterministic exposure/governance analysis — is a
+resource network-exposed, and what does its identity's grants actually
+reach), and Phase 8 (exploitability classification — a new
+exploitability-mapper subagent correlates confirmed findings to that
+graph, classifying each exploitable/contained/not_correlated, evidence-
+gated the same way `assign_verdict` is; restructures the CISO report's
+findings around it) are all done — see `docs/CLOUD.md`.
 
 See `docs/ARCHITECTURE.md` for the full picture and
 `docs/CONSTITUTION_MAPPING.md` for how each constitution principle maps to
@@ -75,14 +79,15 @@ actual code.
 | `src/foundry/orchestration/` | `concurrency.py` (`run_bounded()`, a generic bounded-concurrency primitive), `agent_runner.py` (`run_single_subagent()` — `.ainvoke()` by default, `.astream_events()` when given an `on_event` callback), `events.py` (`StreamEventTranslator` — the raw LangGraph stream turned into clean live events), `detection.py` (genuinely concurrent Detector instances — broad rule-sweep+exploratory, N directed workers racing the real `WorkQueue`), `loop_control.py` (pure stop/continue decision logic), `assessment.py` (`run_assessment()` — the real full sequence, tying it all together) |
 | `src/foundry/api/` | `store.py` (`AssessmentStore`, in-memory, no credential-shaped field ever), `app.py` (FastAPI: `POST /assessments`, `GET .../status`, `GET .../events` SSE, `GET .../report`) — see `docs/API.md` |
 | `frontend/` | Next.js 16 app consuming the FastAPI backend: `lib/api.ts`/`lib/types.ts` (typed HTTP + SSE client), `components/ConfigForm.tsx`/`LiveEventFeed.tsx`/`ResultsSummary.tsx`, `app/page.tsx` (the idle→starting→running→complete/failed state machine). API key lives only in React state for the session, never logged or persisted |
-| `src/foundry/cloud/` | Phase 6: `iac_parser.py` (Terraform/CloudFormation/Kubernetes, no LLM), `iam_parser.py` (IAM policy documents), `store.py` (`CloudResourceStore`, same delete-then-insert-scoped-to-one-file shape as `IndexStore.write_index`), `tools.py` (LangChain tool wrappers, first used by the not-yet-built Phase 8), `detect.py` (content-sniffed IaC/IAM kind detection) — see `docs/CLOUD.md` |
+| `src/foundry/cloud/` | Phases 6-8: `iac_parser.py` (Terraform/CloudFormation/Kubernetes, no LLM), `iam_parser.py` (IAM policy documents), `store.py` (`CloudResourceStore`), `detect.py` (content-sniffed IaC/IAM kind detection), `exposure.py`/`graph.py` (Phase 7: deterministic exposure classification + grant-reachability BFS, no LLM), `exploitability.py` (`ExploitabilityStore`, the Phase 8 evidence gate), `tools.py`/`exploitability_tools.py` (LangChain tool wrappers) — see `docs/CLOUD.md` |
+| `src/foundry/agents/exploitability_mapper.py` | Phase 8's new role: correlates confirmed findings with Phase 6/7's cloud graph, classifying each exploitable/contained/not_correlated |
 | `src/foundry/detector/tools.py` | `queue_candidate`/`record_rule_gap` — the Detector's only writes, both internal-only (Constitution II) — plus `build_directed_task_tools` (`claim_directed_task`/`complete_directed_task`), which consumes Coverage-Guide's queued gaps and always leaves a coverage-log sweep as evidence, whether or not anything was found |
 | `src/foundry/triager/tools.py` | `list_candidates`/`get_candidate`/`assign_verdict` — `assign_verdict` binds the real Indexer resolver as a closure the model can't see or influence |
 | `src/foundry/coverage/` | `store.py` (`CoverageStore`: the whole FR-067/069/070/071/074 mechanism, no LLM), `tools.py` (one read-only tool, `get_coverage_report`) |
 | `src/foundry/reporter/` | `classification.py` (CWE lookup + the FR-083 denylist scan, no LLM), `store.py` (`ReporterStore`: FR-079/081/083 enforced structurally; `build_ciso_report()` is Phase 5's CISO-ready report), `executive_summary.py` (the report's one LLM-authored paragraph, deterministic fallback underneath), `tools.py` (LangChain tool wrappers) |
 | `src/foundry/observability/galileo.py` | Optional Galileo AI tracing, automatic-only scope — `build_galileo_callback()`/`galileo_run_config()`/`console_url()`. Wired only at `agent.invoke()` call sites; touches no Substrate or role store. `None`/no-op whenever `GALILEO_API_KEY` isn't set, never raises even when set and unreachable |
 | `src/foundry/agents/` | All eight core roles' SubAgents (Indexer, Cartographer, Detector ×3 — rule-sweep, exploratory, directed —, Triager, Coverage-Guide, Reporter), plus `_middleware.py`'s shared filesystem-tool restriction |
-| `tests/` (22 files) | 306 tests total (4 skip, not fail, without the `[cloud]` extra) proving the constitution's I/II/III/IV/V/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically where possible, and — for Phase 2/3's real concurrency and streaming — via scripted fake chat models driving real DeepAgents graphs, and FastAPI's `TestClient`, rather than mocking around the frameworks; no external network calls |
+| `tests/` (26 files) | 354 tests total (4 skip, not fail, without the `[cloud]` extra) proving the constitution's I/II/III/IV/V/VI/VIII/XI principles and FR-020/021/022/025/026/031/041/042/054/067/068/069/070/071/074/076/079/081/083, mechanically where possible, and — for Phase 2/3's real concurrency and streaming, and Phase 8's exploitability mapper — via scripted fake chat models driving real DeepAgents graphs, and FastAPI's `TestClient`, rather than mocking around the frameworks; no external network calls |
 | `data/codeguard/rules/` | Vendored CodeGuard rule corpus (fetched, not committed — run `scripts/fetch_codeguard_rules.py`) |
 | `data/toy_target/vulnerable_app.py` | Small deliberately-vulnerable Flask app; the shared Python target every notebook section parses/queries |
 | `data/multi_lang_toy_target/` | Phase 1's multi-language sibling — one small deliberately-vulnerable file per non-Python supported language |
@@ -93,7 +98,7 @@ actual code.
 | `docs/CODEGUARD_INTEGRATION.md` | How the rule corpus is fetched, pinned, and (eventually) consumed by the Detector |
 | `docs/OBSERVABILITY.md` | Galileo integration: scope, trace/span mapping, opt-in/fail-soft design, constraints (free-tier trace budget, SaaS data exposure) |
 | `docs/API.md` | The FastAPI backend: routes, live event streaming, credential handling, the Galileo process-wide-config caveat, what `/report` serves (Phase 5's CISO report) |
-| `docs/CLOUD.md` | Phase 6: IaC/IAM ingestion — what's parsed, content-sniffing detection, and every real parsing gotcha found while building it (python-hcl2's version-dependent output shape, CloudFormation's short-form intrinsic tags, two-pass reference resolution) |
+| `docs/CLOUD.md` | Phases 6-8: IaC/IAM ingestion, deterministic exposure/reachability analysis, and exploitability classification — what's parsed, every real gotcha found while building it (python-hcl2's version-dependent output shape, CloudFormation's short-form intrinsic tags, the identity-resource-as-workload bug), and the evidence gate `ExploitabilityStore` enforces |
 
 ## Quickstart (local)
 

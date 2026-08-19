@@ -50,6 +50,7 @@ def test_parse_terraform_extracts_resources_from_the_fixture():
         "aws_iam_role.lambda_exec",
         "aws_iam_role_policy.lambda_exec_inline",
         "aws_lambda_function.process_upload",
+        "aws_lambda_function_url.process_upload",
         "aws_s3_bucket.uploads",
         "aws_s3_bucket_public_access_block.uploads",
     }

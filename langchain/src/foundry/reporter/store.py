@@ -107,7 +107,7 @@ class ReporterStore:
         with lock_for(self._conn):
             published = self._conn.execute(
                 """
-                SELECT f.symbol, f.vulnerability_class, f.exploited, r.severity
+                SELECT f.fingerprint, f.symbol, f.vulnerability_class, f.exploited, r.severity
                 FROM findings f JOIN finding_reports r ON f.fingerprint = r.finding_fingerprint
                 ORDER BY f.symbol
                 """
@@ -124,6 +124,35 @@ class ReporterStore:
         open_items = coverage_store.open_items()
         closed_items = coverage_store.closed_items()
         return published, by_severity, by_exploited, by_component, open_items, closed_items
+
+    def _exploitability_section(self, published, exploitability_store: Any) -> list[str]:
+        """Phase 8: groups `published` findings by their exploitability
+        classification (if one was recorded -- a finding the mapper
+        never reached, e.g. the LLM step was skipped or failed entirely,
+        is listed as unclassified rather than silently omitted)."""
+        buckets: dict[str, list[str]] = {"exploitable": [], "contained": [], "not_correlated": [], "unclassified": []}
+        for r in published:
+            verdict = exploitability_store.get(r["fingerprint"])
+            label = f"{r['symbol']} [{r['vulnerability_class']}]"
+            if verdict is None:
+                buckets["unclassified"].append(label)
+                continue
+            detail = f"{label}: {verdict['reasoning']}"
+            if verdict["correlated_resource"]:
+                detail += f" (resource: {verdict['correlated_resource']})"
+            buckets[verdict["classification"]].append(detail)
+
+        lines = ["## Exploitability"]
+        lines.append(
+            f"- {len(buckets['exploitable'])} exploitable, {len(buckets['contained'])} contained, "
+            f"{len(buckets['not_correlated'])} not correlated, {len(buckets['unclassified'])} unclassified"
+        )
+        for title, key in (("Exploitable", "exploitable"), ("Contained", "contained"), ("Not Correlated", "not_correlated")):
+            if not buckets[key]:
+                continue
+            lines.append(f"### {title}")
+            lines.extend(f"- {item}" for item in buckets[key])
+        return lines
 
     def build_rollup(self, coverage_store: CoverageStore) -> str:
         """FR-081: finding count by severity and by exploited status,
@@ -172,6 +201,7 @@ class ReporterStore:
         coverage_store: CoverageStore,
         model: str | Any | None = None,
         stop_reason: str = "",
+        exploitability_store: Any | None = None,
     ) -> str:
         """The downloadable CISO-ready report (Phase 5): the same facts
         `build_rollup` aggregates, restructured severity-first with an
@@ -183,6 +213,16 @@ class ReporterStore:
         `build_rollup`'s own output; only that one paragraph ever touches
         an LLM, and FR-083's denylist scan is checked before it's ever
         included (see `build_executive_summary`).
+
+        `exploitability_store` (Phase 8, `foundry.cloud.exploitability.
+        ExploitabilityStore`, typed `Any` here to avoid this module
+        depending on `foundry.cloud` for a type hint alone) is optional
+        and backward compatible -- omitted, the report looks exactly like
+        Phase 5's. Given, each published finding's exploitable/contained/
+        not_correlated classification (if one was ever recorded) is
+        surfaced in its own section, exploitable findings first with
+        their evidence, so a reader doesn't have to guess which findings
+        actually matter in this specific deployment.
         """
         published, by_severity, by_exploited, by_component, open_items, closed_items = self._gather(coverage_store)
         total_goals = len(open_items) + len(closed_items)
@@ -212,6 +252,10 @@ class ReporterStore:
             lines.append(f"- **{sev}** ({count}): {', '.join(classes)}")
         if not any_findings:
             lines.append("- No confirmed findings were published.")
+
+        if exploitability_store is not None:
+            lines.append("")
+            lines.extend(self._exploitability_section(published, exploitability_store))
 
         lines.append("")
         lines.append("## Remediation Priorities")

@@ -1,7 +1,8 @@
 """LangChain tool wrappers around CloudResourceStore -- read-only, same
-pattern as `foundry.indexer.tools`. Not yet bound to any subagent (Phase
-6 is ingestion only); Phase 8's exploitability-mapper subagent is the
-first real caller.
+pattern as `foundry.indexer.tools`. First real caller is Phase 8's
+exploitability-mapper subagent (`foundry.agents.exploitability_mapper`),
+alongside `foundry.cloud.exploitability_tools`'s finding-list and
+write tool.
 """
 from __future__ import annotations
 
@@ -51,4 +52,40 @@ def build_cloud_tools(store: CloudResourceStore) -> list[BaseTool]:
         lines = [f"{g.effect} {', '.join(g.actions)} on {', '.join(g.resources)}" for g in grants]
         return "\n".join(lines)
 
-    return [list_cloud_resources, get_cloud_resource, get_cloud_references, get_grants]
+    @tool
+    def get_exposure(address: str) -> str:
+        """Phase 7's deterministic exposure fact for a resource: is it
+        network-reachable, and why/why not. Always available once an
+        assessment has run -- every parsed resource gets a fact, even a
+        "not exposed" one with an honest reason."""
+        fact = store.get_exposure(address)
+        if fact is None:
+            return f"No exposure fact recorded for '{address}' (it may not be a known resource)."
+        return f"{address}: {'exposed' if fact.is_exposed else 'not exposed'} -- {fact.reason}"
+
+    @tool
+    def get_reachability(address: str) -> str:
+        """Phase 7's deterministic reachability edges *from* this
+        resource: what its attached identity's grants let it reach, and
+        which known cloud resource (if any) each grant's resource
+        pattern was confidently matched against. An empty result is
+        honest -- it means no attached identity's grants were found, not
+        that reachability wasn't checked."""
+        edges = store.list_reachability(from_address=address)
+        if not edges:
+            return f"'{address}' has no recorded reachability edges."
+        lines = [
+            f"via {e.principal}: {', '.join(e.actions)} on {e.resource_pattern}"
+            + (f" (matches known resource {e.matched_resource})" if e.matched_resource else " (no known resource matched)")
+            for e in edges
+        ]
+        return "\n".join(lines)
+
+    return [
+        list_cloud_resources,
+        get_cloud_resource,
+        get_cloud_references,
+        get_grants,
+        get_exposure,
+        get_reachability,
+    ]

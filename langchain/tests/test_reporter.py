@@ -290,6 +290,55 @@ async def test_ciso_report_never_duplicates_rollup_facts_incorrectly(reporter, f
 
 
 # ---------------------------------------------------------------------------
+# Phase 8: build_ciso_report's exploitability section (optional, backward
+# compatible -- every test above already proves the report without it)
+# ---------------------------------------------------------------------------
+
+
+async def test_ciso_report_without_exploitability_store_has_no_exploitability_section(reporter, index):
+    """Backward compatibility: Phase 5's own tests never pass
+    exploitability_store, and shouldn't have to change."""
+    coverage = CoverageStore(index.conn)
+    report = await reporter.build_ciso_report(coverage, model=None)
+    assert "## Exploitability" not in report
+
+
+async def test_ciso_report_groups_findings_by_exploitability_classification(reporter, findings, index):
+    from foundry.cloud.exploitability import ExploitabilityStore
+    from foundry.cloud.models import CloudParseResult, CloudResource
+    from foundry.cloud.store import CloudResourceStore
+
+    coverage = CoverageStore(index.conn)
+    cloud_store = CloudResourceStore(index.conn)
+    resource = CloudResource(file="main.tf", resource_type="aws_lambda_function", resource_name="handler", provider="terraform", attributes={})
+    cloud_store.write_resources("main.tf", CloudParseResult(resources=[resource]))
+    exploitability_store = ExploitabilityStore(index.conn, cloud_store)
+
+    id1, fp1, _ = findings.queue_candidate(
+        normalized_path=NORMALIZED_PATH, symbol="get_user_by_name",
+        vulnerability_class="sql-injection", description="c", technique="t",
+    )
+    findings.assign_verdict(id1, "true-positive", [Citation(NORMALIZED_PATH, "get_user_by_name", "impact")], "report", resolver=lambda c: True)
+    reporter.publish_finding_report(id1, "Finding 1", "Body.", "critical", "CWE-89")
+    exploitability_store.classify(fp1, "exploitable", "public function URL, over-permissioned role", correlated_resource="aws_lambda_function.handler")
+
+    id2, fp2, _ = findings.queue_candidate(
+        normalized_path=NORMALIZED_PATH, symbol="read_uploaded_file",
+        vulnerability_class="path-traversal", description="c", technique="t",
+    )
+    findings.assign_verdict(id2, "true-positive", [Citation(NORMALIZED_PATH, "read_uploaded_file", "impact")], "report", resolver=lambda c: True)
+    reporter.publish_finding_report(id2, "Finding 2", "Body.", "medium", "CWE-22")
+    # id2 never classified -- proves the "unclassified" bucket, not silently dropped
+
+    report = await reporter.build_ciso_report(coverage, model=None, exploitability_store=exploitability_store)
+    assert "## Exploitability" in report
+    assert "1 exploitable, 0 contained, 0 not correlated, 1 unclassified" in report
+    assert "### Exploitable" in report
+    assert "get_user_by_name [sql-injection]: public function URL, over-permissioned role (resource: aws_lambda_function.handler)" in report
+    assert "### Contained" not in report  # no contained findings -- section omitted, not empty-printed
+
+
+# ---------------------------------------------------------------------------
 # Tools and SubAgent wrapping (structural, no LLM invoked)
 # ---------------------------------------------------------------------------
 

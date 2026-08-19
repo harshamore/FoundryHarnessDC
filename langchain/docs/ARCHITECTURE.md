@@ -616,16 +616,49 @@ exploitation (a scope decision made explicitly with the user; see
   imports from this package unconditionally, so a top-level import would
   have broken the harness for anyone without `[cloud]` installed. 35 new
   tests (306 total), 4 of them skipped (not failed) without `[cloud]`.
-- **Phase 7 (not started)** — deterministic exposure & governance analysis:
-  for each parsed cloud resource, is it network-exposed, and what does its
-  attached identity's grants actually reach? No LLM, no code correlation
-  yet — purely infra-side, building on Phase 6's reference/grant graph.
-- **Phase 8 (not started)** — exploitability classification: correlates
-  confirmed findings to Phase 6/7's infra graph (evidence-gated, allowed to
-  conclude "not correlated" rather than guess), producing exploitable /
-  contained / not-correlated per finding, with the reachable-resource set
-  as blast-radius evidence for exploitable ones. Restructures the CISO
-  report's findings section around this classification.
+- **Phase 7 (done)** — `src/foundry/cloud/exposure.py`/`graph.py`:
+  deterministic exposure & governance analysis, purely infra-side, no LLM,
+  no code correlation yet. `classify_all_exposure()` is a pragmatic, growing
+  rule set (security groups with `0.0.0.0/0` ingress, S3 buckets with a
+  disabling public-access-block or public ACL, Lambda function URLs with
+  `authorization_type=NONE`, Kubernetes `LoadBalancer`/`NodePort` Services
+  or ones referenced by an `Ingress`) — a resource type with no rule
+  reports not-exposed with an honest reason, never guessed either way, the
+  same spirit as the Indexer's parser and Cartographer's FR-036a fallback.
+  `compute_reachability()` walks Phase 6's reference graph from a resource
+  to its attached identity, then to that identity's grants — real,
+  bounded BFS, handling the actual "grant lives on a separate policy
+  resource that itself references the role" shape Terraform/CloudFormation
+  both produce. Both persist into `CloudResourceStore` as whole-graph-
+  replace tables, recomputed every run. Found and fixed a real bug while
+  building this: an identity/policy-definition resource (e.g. an
+  `aws_iam_role_policy`) was itself being walked as if it were a workload,
+  inheriting its own attached grant as a circular "self-reaches" edge —
+  caught by a test before shipping, fixed by excluding identity/policy
+  resource types from the outer "compute reachability from" loop. 27 new
+  tests (333 total).
+- **Phase 8 (done)** — `src/foundry/cloud/exploitability.py` +
+  `src/foundry/agents/exploitability_mapper.py`: exploitability
+  classification, correlating confirmed findings to Phase 6/7's infra
+  graph. A new subagent (`build_exploitability_mapper_subagent`) reads
+  confirmed findings and the cloud graph, and classifies each as
+  exploitable / contained / not_correlated via `ExploitabilityStore.
+  classify()` — an evidence gate mirroring `FindingStore.assign_verdict`'s
+  "resolver you can't fake" shape exactly: the finding must be real and
+  `true-positive`, and `exploitable`/`contained` both require a real,
+  already-indexed `correlated_resource` (`not_correlated` must not name
+  one) — the model can always honestly answer "no confident match," there's
+  no tool-level pressure to force one. `ReporterStore.build_ciso_report`
+  gained an optional `exploitability_store` parameter (backward compatible)
+  adding an "Exploitability" section grouping findings by classification,
+  exploitable first with their evidence. Wired into `run_assessment` right
+  after the detect/triage loop stops, before the final report step.
+  Verified with a scripted fake `BaseChatModel` driving the real subagent
+  graph (real `task`-tool delegation, real tool calls through the real
+  LangGraph `ToolNode`) through both a positive match and an honest
+  not-correlated outcome in one run, plus a `run_assessment`-level wiring
+  proof. 21 new tests (354 total). See `docs/CLOUD.md` for the full
+  picture of all three phases.
 
 Scoped deliberately to local-only, single-user for now — no auth or
 multi-tenant secret storage yet; API keys live in memory for the session

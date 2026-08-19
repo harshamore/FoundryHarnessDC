@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from foundry.agents.exploitability_mapper import build_exploitability_mapper_subagent
 from foundry.agents.reporter import build_reporter_subagent
 from foundry.agents.triager import build_triager_subagent
 from foundry.cartographer.fallback import (
@@ -31,6 +32,9 @@ from foundry.cartographer.fallback import (
     fallback_trust_boundaries,
 )
 from foundry.cartographer.store import SecurityMapStore
+from foundry.cloud.exploitability import ExploitabilityStore
+from foundry.cloud.exposure import classify_all_exposure
+from foundry.cloud.graph import compute_reachability
 from foundry.cloud.iac_parser import parse_iac_file
 from foundry.cloud.iam_parser import parse_iam_policy_file
 from foundry.cloud.store import CloudResourceStore
@@ -73,6 +77,7 @@ class AssessmentConfig:
     run_cartographer_agent: bool = True
     run_triager_agent: bool = True
     run_reporter_agent: bool = True
+    run_exploitability_agent: bool = True
     on_event: Callable[[AssessmentEvent], None] | None = None
 
 
@@ -99,6 +104,7 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
         reporter_store = ReporterStore(conn, config.reports_dir)
         budget_governor = BudgetGovernor(conn, config.budget_caps)
         cloud_store = CloudResourceStore(conn)
+        exploitability_store = ExploitabilityStore(conn, cloud_store)
 
         # 1. Index -- deterministic, no model (FR-020). Every supported
         # file in the target, regardless of language.
@@ -120,6 +126,18 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
             else:
                 cloud_result = parse_iac_file(cloud_file.path, cloud_file.normalized_path, cloud_file.kind)
             cloud_store.write_resources(cloud_file.normalized_path, cloud_result)
+
+        # 1c. Exposure & governance analysis (Phase 7) -- deterministic,
+        # no model, no code correlation yet (that's Phase 8). Recomputed
+        # from the whole graph every run rather than incrementally, since
+        # exposure/reachability facts are cheap pure functions over
+        # already-indexed data, not derived per-file the way indexing
+        # itself is.
+        cloud_resources = cloud_store.list_resources()
+        cloud_references = cloud_store.list_references()
+        cloud_grants = cloud_store.list_grants()
+        cloud_store.write_exposure(classify_all_exposure(cloud_resources, cloud_references))
+        cloud_store.write_reachability(compute_reachability(cloud_resources, cloud_references, cloud_grants))
 
         # 2. Map -- the deterministic fallback always lands first (FR-036a:
         # "an empty security map is a Cartographer failure, not graceful
@@ -224,6 +242,33 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
 
             outcome = evaluate_cycle(coverage_store, budget_governor, cycle)
 
+        # 6b. Exploitability classification (Phase 8) -- correlates every
+        # confirmed finding with Phase 6/7's cloud graph, once the loop
+        # has stopped producing new findings and cloud data is stable.
+        # Runs before Reporter so build_ciso_report (below) can include
+        # the classification in the same pass, not a follow-up run.
+        if config.run_exploitability_agent:
+            exploitability_subagent = build_exploitability_mapper_subagent(
+                finding_store, cloud_store, exploitability_store, index_store
+            )
+            await run_single_subagent(
+                model=config.model,
+                subagent=exploitability_subagent,
+                main_system_prompt=(
+                    "You are the harness main agent. Delegate to the "
+                    "'exploitability-mapper' subagent to classify every "
+                    "confirmed finding's real-world exploitability."
+                ),
+                user_message=(
+                    "Using the exploitability mapper, classify every true-positive "
+                    "finding as exploitable, contained, or not_correlated, based on "
+                    "the parsed IaC/IAM data."
+                ),
+                galileo_callback=config.galileo_callback,
+                run_name="exploitability-mapper",
+                on_event=config.on_event,
+            )
+
         # 7. Report -- always last, only once the loop has actually
         # stopped. Only true-positive findings are ever eligible
         # (Constitution II, FR-079) -- enforced by ReporterStore itself,
@@ -263,7 +308,9 @@ async def run_assessment(config: AssessmentConfig) -> AssessmentResult:
         # this ever needs debugging separately. `AssessmentResult.rollup`
         # intentionally still carries the plain rollup text above, not
         # this -- the API's `/report` endpoint serves this file directly.
-        await reporter_store.build_ciso_report(coverage_store, model=config.model, stop_reason=outcome.stop_reason)
+        await reporter_store.build_ciso_report(
+            coverage_store, model=config.model, stop_reason=outcome.stop_reason, exploitability_store=exploitability_store
+        )
 
         return AssessmentResult(
             cycles_run=cycle,

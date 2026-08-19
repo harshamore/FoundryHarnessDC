@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from foundry.cloud.exposure import ExposureFact
+from foundry.cloud.graph import ReachabilityEdge
 from foundry.cloud.models import CloudParseResult, CloudResource, Grant
 from foundry.substrate.db import lock_for
 
@@ -119,3 +121,68 @@ class CloudResourceStore:
             else:
                 rows = self._conn.execute("SELECT * FROM cloud_grants").fetchall()
             return [self._row_to_grant(r) for r in rows]
+
+    def write_exposure(self, facts: list[ExposureFact]) -> None:
+        """Replaces the *entire* exposure table -- unlike `write_resources`,
+        this isn't scoped to one file, since exposure facts are recomputed
+        from the whole graph every time (Phase 7 has no per-file
+        incremental story; the input is always "every resource currently
+        indexed")."""
+        with lock_for(self._conn):
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM cloud_exposure")
+                for f in facts:
+                    self._conn.execute(
+                        "INSERT INTO cloud_exposure (address, is_exposed, reason) VALUES (?, ?, ?)",
+                        (f.address, int(f.is_exposed), f.reason),
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def get_exposure(self, address: str) -> ExposureFact | None:
+        with lock_for(self._conn):
+            row = self._conn.execute("SELECT * FROM cloud_exposure WHERE address = ?", (address,)).fetchone()
+            if row is None:
+                return None
+            return ExposureFact(address=row["address"], is_exposed=bool(row["is_exposed"]), reason=row["reason"])
+
+    def write_reachability(self, edges: list[ReachabilityEdge]) -> None:
+        """Same whole-graph-replace shape as `write_exposure`, same reason."""
+        with lock_for(self._conn):
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                self._conn.execute("DELETE FROM cloud_reachability")
+                for e in edges:
+                    self._conn.execute(
+                        """
+                        INSERT INTO cloud_reachability (from_address, principal, actions, resource_pattern, matched_resource)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (e.from_address, e.principal, json.dumps(e.actions), e.resource_pattern, e.matched_resource),
+                    )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    def list_reachability(self, from_address: str | None = None) -> list[ReachabilityEdge]:
+        with lock_for(self._conn):
+            if from_address:
+                rows = self._conn.execute(
+                    "SELECT * FROM cloud_reachability WHERE from_address = ?", (from_address,)
+                ).fetchall()
+            else:
+                rows = self._conn.execute("SELECT * FROM cloud_reachability").fetchall()
+            return [
+                ReachabilityEdge(
+                    from_address=r["from_address"],
+                    principal=r["principal"],
+                    actions=json.loads(r["actions"]),
+                    resource_pattern=r["resource_pattern"],
+                    matched_resource=r["matched_resource"],
+                )
+                for r in rows
+            ]

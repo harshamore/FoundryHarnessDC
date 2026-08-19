@@ -13,7 +13,7 @@ resource "aws_iam_role_policy" "lambda_exec_inline" {
         {
           "Effect": "Allow",
           "Action": ["s3:*", "dynamodb:*"],
-          "Resource": ["arn:aws:s3:::prod-*", "arn:aws:dynamodb:*:*:table/prod-*"]
+          "Resource": ["arn:aws:s3:::prod-*", "arn:aws:s3:::cloud-toy-target-*", "arn:aws:dynamodb:*:*:table/prod-*"]
         }
       ]
     }
@@ -26,6 +26,11 @@ resource "aws_lambda_function" "process_upload" {
   handler       = "handler.handler"
   runtime       = "python3.12"
   source_dir    = "./lambda"
+}
+
+resource "aws_lambda_function_url" "process_upload" {
+  function_name     = aws_lambda_function.process_upload.function_name
+  authorization_type = "NONE"
 }
 
 resource "aws_s3_bucket" "uploads" {

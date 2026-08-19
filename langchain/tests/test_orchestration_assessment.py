@@ -173,6 +173,7 @@ async def test_run_assessment_closes_the_checklist_via_the_directed_loop(tmp_pat
         run_cartographer_agent=False,
         run_triager_agent=False,
         run_reporter_agent=False,
+        run_exploitability_agent=False,
     )
 
     result = await run_assessment(config)
@@ -249,6 +250,7 @@ async def test_run_assessment_surfaces_the_galileo_console_url_when_tracing_is_c
         run_cartographer_agent=False,
         run_triager_agent=False,
         run_reporter_agent=False,
+        run_exploitability_agent=False,
         galileo_callback=_FakeGalileoCallback(),
     )
     result = await run_assessment(config)
@@ -271,6 +273,7 @@ async def test_run_assessment_leaves_galileo_console_url_none_when_tracing_not_c
         run_cartographer_agent=False,
         run_triager_agent=False,
         run_reporter_agent=False,
+        run_exploitability_agent=False,
     )
     result = await run_assessment(config)
     assert result.galileo_console_url is None
@@ -305,6 +308,7 @@ async def test_run_assessment_indexes_cloud_files_alongside_code(tmp_path):
         run_cartographer_agent=False,
         run_triager_agent=False,
         run_reporter_agent=False,
+        run_exploitability_agent=False,
     )
     await run_assessment(config)
 
@@ -317,6 +321,115 @@ async def test_run_assessment_indexes_cloud_files_alongside_code(tmp_path):
     assert "Deployment.process-upload" in addresses
     assert "iam-policy.prod-admin-policy" in addresses
     assert cloud_store.list_grants(principal="iam-policy.prod-admin-policy")
+
+    # Phase 7: exposure and reachability are computed and persisted as
+    # part of the same run, no subagent needed -- the Lambda has a public
+    # Function URL (exposed) and reaches the S3 bucket via its
+    # over-permissioned inline policy (the "exploitable" story Phase 8
+    # will classify against).
+    exposure = cloud_store.get_exposure("aws_lambda_function.process_upload")
+    assert exposure is not None
+    assert exposure.is_exposed is True
+
+    reachability = cloud_store.list_reachability(from_address="aws_lambda_function.process_upload")
+    assert any(e.matched_resource == "aws_s3_bucket.uploads" for e in reachability)
+
+
+class DetectorAndExploitabilityFakeModel(CombinedDetectorFakeModel):
+    """Extends the Detector-only fake model to also drive the
+    exploitability-mapper's real tool-calling loop -- broad detection
+    always runs regardless of run_*_agent flags, so any fake model given
+    to run_assessment must still handle it even when this test's only
+    real interest is the exploitability-mapper's own wiring."""
+
+    classified: int = 0
+
+    def _decide(self, messages):
+        sys_text = " ".join(str(m.content) for m in messages if isinstance(m, SystemMessage))
+        last = messages[-1]
+
+        if "Exploitability Mapper role" in sys_text:
+            if isinstance(last, ToolMessage):
+                text = str(last.content)
+                if text.startswith("fingerprint="):
+                    if self.classified == 0:
+                        fp = text.split("fingerprint=")[1].split(" ")[0]
+                        self.classified += 1
+                        return AIMessage(
+                            content="",
+                            tool_calls=[{
+                                "name": "classify_exploitability",
+                                "args": {
+                                    "finding_fingerprint": fp,
+                                    "classification": "not_correlated",
+                                    "reasoning": "no matching cloud resource found",
+                                    "correlated_resource": None,
+                                },
+                                "id": self._next_id("classify"),
+                            }],
+                        )
+                    return AIMessage(content="Done.")
+                if "Recorded" in text or "rejected" in text:
+                    return AIMessage(content="Done.")
+                return AIMessage(content="Nothing to classify.")
+            return AIMessage(content="", tool_calls=[{"name": "list_confirmed_findings", "args": {}, "id": self._next_id("list")}])
+
+        if "exploitability-mapper" in sys_text:
+            if isinstance(last, ToolMessage):
+                return AIMessage(content=f"Delegation finished: {last.content}")
+            return AIMessage(
+                content="",
+                tool_calls=[{"name": "task", "args": {"description": "classify", "subagent_type": "exploitability-mapper"}, "id": self._next_id("task")}],
+            )
+
+        return super()._decide(messages)
+
+
+async def test_run_assessment_wires_the_exploitability_mapper_when_enabled(tmp_path):
+    """Phase 8: proves run_assessment's own wiring (config flag ->
+    subagent construction -> real invocation -> build_ciso_report
+    receiving the store), not the subagent's tool-calling logic itself
+    (already proven in isolation, with a real confirmed finding, in
+    test_cloud_exploitability.py::test_real_agent_run_classifies_both_
+    findings_correctly). Triager stays off here (no automated test in
+    this codebase drives Triager's own real agent execution yet), so
+    there are zero confirmed findings -- this specifically proves the
+    'nothing to classify' path completes cleanly through the real graph,
+    not just via a mocked run_assessment."""
+    pytest.importorskip("hcl2")
+    from foundry.cloud.store import CloudResourceStore
+
+    fixture_root = REPO_ROOT / "data" / "cloud_toy_target"
+    files = {"lambda/handler.py": (fixture_root / "lambda" / "handler.py").read_bytes()}
+    for name in ("main.tf", "iam_policy.json", "k8s-deployment.yaml"):
+        files[name] = (fixture_root / name).read_bytes()
+    cloud_target = from_upload(files)
+
+    config = AssessmentConfig(
+        target=cloud_target,
+        db_path=tmp_path / "assessment_exploitability.sqlite3",
+        reports_dir=tmp_path / "reports_exploitability",
+        operator_goals=["sql-injection"],
+        rules_dir=REPO_ROOT / "data" / "codeguard" / "rules",
+        model=DetectorAndExploitabilityFakeModel(normalized_path="lambda/handler.py"),
+        max_directed_workers=1,
+        max_concurrent=1,
+        max_cycles=1,
+        budget_caps=BudgetCaps(yield_threshold=0.0),
+        run_cartographer_agent=False,
+        run_triager_agent=False,
+        run_reporter_agent=False,
+        run_exploitability_agent=True,
+    )
+    await run_assessment(config)
+
+    # No crash, and the CISO report was still produced with the
+    # exploitability section present (even though empty -- zero
+    # confirmed findings means zero classifications, not a missing
+    # section, since exploitability_store was genuinely passed through).
+    ciso_report = (config.reports_dir / "ciso_report.md").read_text()
+    assert "## Exploitability" in ciso_report
+    assert "0 exploitable, 0 contained, 0 not correlated, 0 unclassified" in ciso_report
 
 
 async def test_run_assessment_stops_via_no_progress_guard_when_directed_work_never_completes(tmp_path, target):
@@ -339,6 +452,7 @@ async def test_run_assessment_stops_via_no_progress_guard_when_directed_work_nev
         run_cartographer_agent=False,
         run_triager_agent=False,
         run_reporter_agent=False,
+        run_exploitability_agent=False,
     )
 
     result = await run_assessment(config)
@@ -370,6 +484,7 @@ async def test_run_assessment_streams_live_events_when_on_event_is_given(tmp_pat
         run_cartographer_agent=False,
         run_triager_agent=False,
         run_reporter_agent=False,
+        run_exploitability_agent=False,
         on_event=received.append,
     )
 

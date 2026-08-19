@@ -137,6 +137,34 @@ CREATE TABLE IF NOT EXISTS cloud_grants (
     resources TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS cloud_exposure (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    address TEXT NOT NULL UNIQUE,
+    is_exposed INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS cloud_reachability (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_address TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    actions TEXT NOT NULL,
+    resource_pattern TEXT NOT NULL,
+    matched_resource TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS exploitability_verdicts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    finding_fingerprint TEXT NOT NULL UNIQUE,
+    classification TEXT NOT NULL CHECK (classification IN ('exploitable', 'contained', 'not_correlated')),
+    correlated_resource TEXT,
+    reasoning TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 
